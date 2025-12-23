@@ -1,31 +1,46 @@
-import os
-import sys
-import socket
-import threading
-import subprocess
 import tkinter as tk
 from tkinter import filedialog, messagebox
-import requests
-import pystray
-from PIL import Image
+import subprocess
+import threading
+import socket
+import time
+import os
+import sys
+import urllib.request
 
-# ===================== 基础配置 =====================
-DEFAULT_PORT = "5000"
-SERVE_DIR = None
-dufs_process = None
-tray_icon = None
+# ========================
+# 全局状态
+# ========================
+STATE_STOPPED = "STOPPED"
+STATE_STARTING = "STARTING"
+STATE_RUNNING = "RUNNING"
 
-# ===================== 路径处理（兼容 PyInstaller） =====================
-def resource_path(rel):
-    if hasattr(sys, "_MEIPASS"):
-        return os.path.join(sys._MEIPASS, rel)
-    return os.path.join(os.path.abspath("."), rel)
+current_state = STATE_STOPPED
+dufs_proc = None
 
-DUFS_EXE = resource_path("dufs.exe")
-ICON_PATH = resource_path("icon.ico")
+SERVE_DIR = os.getcwd()
+PORT = 5000
+USE_AUTH = False
 
-# ===================== IP 获取（加速版） =====================
-def get_local_ip():
+# ========================
+# 工具函数
+# ========================
+def is_port_open(port):
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+            return True
+    except:
+        return False
+
+def wait_port_release(port, timeout=5):
+    start = time.time()
+    while time.time() - start < timeout:
+        if not is_port_open(port):
+            return True
+        time.sleep(0.1)
+    return False
+
+def get_lan_ip():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -33,137 +48,166 @@ def get_local_ip():
         s.close()
         return ip
     except:
-        return "未知"
+        return "127.0.0.1"
 
-def get_public_ip():
+def get_wan_ip_async(callback):
+    def run():
+        try:
+            ip = urllib.request.urlopen("https://api.ipify.org", timeout=3).read().decode()
+        except:
+            ip = "获取失败"
+        callback(ip)
+    threading.Thread(target=run, daemon=True).start()
+
+# ========================
+# DUFS 控制
+# ========================
+def stop_dufs():
+    global dufs_proc, current_state
+    if dufs_proc and dufs_proc.poll() is None:
+        dufs_proc.kill()
+        dufs_proc.wait()
+    dufs_proc = None
+    current_state = STATE_STOPPED
+    update_status()
+
+def start_dufs():
+    global dufs_proc, current_state
+
+    current_state = STATE_STARTING
+    update_status()
+
+    stop_dufs()
+    wait_port_release(PORT)
+
+    cmd = ["dufs.exe", SERVE_DIR, "--port", str(PORT)]
+    if USE_AUTH:
+        cmd += ["--auth", "admin:123456"]
+
     try:
-        return requests.get("https://api.ipify.org", timeout=2).text
-    except:
-        return "获取失败"
-
-# ===================== Dufs 控制 =====================
-def start_dufs(args, success_msg):
-    global dufs_process
-
-    if not SERVE_DIR or not os.path.isdir(SERVE_DIR):
-        messagebox.showerror("错误", "请先选择共享目录")
-        return
-
-    stop_dufs_fast()
-
-    try:
-        dufs_process = subprocess.Popen(
-            [DUFS_EXE] + args,
+        dufs_proc = subprocess.Popen(
+            cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW
         )
-        status_var.set("● 运行中")
-        show_start_info_async(success_msg)
     except Exception as e:
         messagebox.showerror("启动失败", str(e))
-        status_var.set("● 已停止")
+        current_state = STATE_STOPPED
+        update_status()
+        return
 
-def stop_dufs_fast():
-    global dufs_process
-    if dufs_process and dufs_process.poll() is None:
-        try:
-            dufs_process.kill()
-        except:
-            pass
-    dufs_process = None
-    status_var.set("● 已停止")
+    # 验证是否真正启动
+    def verify():
+        global current_state
+        for _ in range(20):
+            if is_port_open(PORT):
+                current_state = STATE_RUNNING
+                update_status()
+                show_addresses()
+                return
+            time.sleep(0.2)
+        current_state = STATE_STOPPED
+        update_status()
+        messagebox.showerror("启动失败", "DUFS 未监听端口")
 
-# ===================== 异步启动提示 =====================
-def show_start_info_async(msg):
-    def worker():
-        local_ip = get_local_ip()
-        public_ip = get_public_ip()
-        root.after(0, lambda: messagebox.showinfo(
-            "服务已启动",
-            f"{msg}\n\n"
-            f"本机：http://127.0.0.1:{DEFAULT_PORT}\n"
-            f"内网：http://{local_ip}:{DEFAULT_PORT}\n"
-            f"外网 IP：{public_ip}"
-        ))
-    threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=verify, daemon=True).start()
 
-# ===================== 目录选择 =====================
+# ========================
+# UI 更新
+# ========================
+def update_status():
+    if current_state == STATE_RUNNING:
+        status_var.set("🟢 运行中")
+    elif current_state == STATE_STARTING:
+        status_var.set("🟡 启动中")
+    else:
+        status_var.set("🔴 已停止")
+
+def show_addresses():
+    lan = f"http://{get_lan_ip()}:{PORT}"
+    lan_var.set(lan)
+
+    def set_wan(ip):
+        wan_var.set(f"http://{ip}:{PORT}")
+
+    get_wan_ip_async(set_wan)
+
+# ========================
+# UI 操作
+# ========================
 def choose_dir():
     global SERVE_DIR
-    path = filedialog.askdirectory()
-    if path:
-        SERVE_DIR = path
-        dir_label.config(text=SERVE_DIR)
+    d = filedialog.askdirectory()
+    if d:
+        SERVE_DIR = d
+        dir_var.set(d)
 
-# ===================== UI 操作 =====================
-def run_readonly():
-    start_dufs(["serve", SERVE_DIR, "--port", DEFAULT_PORT], "已启动只读文件服务")
+def toggle_auth():
+    global USE_AUTH
+    USE_AUTH = not USE_AUTH
+    auth_btn.config(text="启用账号密码" if not USE_AUTH else "关闭账号密码")
 
-def run_all():
-    start_dufs(["serve", SERVE_DIR, "--port", DEFAULT_PORT, "--allow-all"], "已启动可写文件服务")
+# ========================
+# Tk UI（冷启动）
+# ========================
+root = tk.Tk()
+root.title("Dufs 文件服务器")
 
-def run_auth():
-    start_dufs(
-        ["serve", SERVE_DIR, "--port", DEFAULT_PORT, "--auth", "admin:123456"],
-        "账号：admin / 123456"
-    )
+dir_var = tk.StringVar(value=SERVE_DIR)
+status_var = tk.StringVar(value="🔴 已停止")
+lan_var = tk.StringVar(value="-")
+wan_var = tk.StringVar(value="-")
 
-# ===================== 托盘 =====================
-def tray_action(func):
-    threading.Thread(target=func, daemon=True).start()
+tk.Label(root, text="共享目录").grid(row=0, column=0, sticky="e")
+tk.Entry(root, textvariable=dir_var, width=40).grid(row=0, column=1)
+tk.Button(root, text="选择", command=choose_dir).grid(row=0, column=2)
 
-def show_window(icon=None, item=None):
-    root.after(0, root.deiconify)
+tk.Label(root, text="服务状态").grid(row=1, column=0, sticky="e")
+tk.Label(root, textvariable=status_var).grid(row=1, column=1, sticky="w")
 
-def exit_app(icon=None, item=None):
-    stop_dufs_fast()
-    if tray_icon:
-        tray_icon.stop()
+tk.Label(root, text="内网地址").grid(row=2, column=0, sticky="e")
+tk.Entry(root, textvariable=lan_var, width=40).grid(row=2, column=1)
+
+tk.Label(root, text="外网地址").grid(row=3, column=0, sticky="e")
+tk.Entry(root, textvariable=wan_var, width=40).grid(row=3, column=1)
+
+tk.Button(root, text="启动服务", command=start_dufs).grid(row=4, column=0)
+tk.Button(root, text="停止服务", command=stop_dufs).grid(row=4, column=1)
+auth_btn = tk.Button(root, text="启用账号密码", command=toggle_auth)
+auth_btn.grid(row=4, column=2)
+
+# ========================
+# 退出清理
+# ========================
+def on_exit():
+    stop_dufs()
     root.destroy()
     os._exit(0)
 
-def setup_tray():
-    global tray_icon
-    image = Image.open(ICON_PATH)
-    menu = pystray.Menu(
-        pystray.MenuItem("显示界面", show_window),
-        pystray.MenuItem("只读服务", lambda: tray_action(run_readonly)),
-        pystray.MenuItem("允许写入", lambda: tray_action(run_all)),
-        pystray.MenuItem("账号密码", lambda: tray_action(run_auth)),
-        pystray.MenuItem("停止服务", lambda: tray_action(stop_dufs_fast)),
-        pystray.MenuItem("退出", exit_app)
-    )
-    tray_icon = pystray.Icon("dufs", image, "Dufs 文件服务器", menu)
-    threading.Thread(target=tray_icon.run, daemon=True).start()
+root.protocol("WM_DELETE_WINDOW", on_exit)
 
-def minimize_to_tray():
-    root.withdraw()
+# ========================
+# 延迟托盘（热启动）
+# ========================
+def start_tray_later():
+    time.sleep(0.5)
+    try:
+        import pystray
+        from PIL import Image
 
-# ===================== 关闭处理 =====================
-def on_close():
-    minimize_to_tray()
+        icon = Image.open("icon.ico")
+        menu = pystray.Menu(
+            pystray.MenuItem("显示窗口", lambda: root.after(0, root.deiconify)),
+            pystray.MenuItem("启动服务", lambda: start_dufs()),
+            pystray.MenuItem("停止服务", lambda: stop_dufs()),
+            pystray.MenuItem("退出", lambda: on_exit())
+        )
+        tray = pystray.Icon("dufs", icon, "Dufs 文件服务器", menu)
+        tray.run()
+    except:
+        pass
 
-# ===================== UI =====================
-root = tk.Tk()
-root.title("Dufs 文件服务器（中文可视化界面）")
-root.geometry("520x520")
-root.protocol("WM_DELETE_WINDOW", on_close)
+threading.Thread(target=start_tray_later, daemon=True).start()
 
-status_var = tk.StringVar(value="● 已停止")
-
-tk.Label(root, text="Dufs 文件服务器控制面板", font=("微软雅黑", 16, "bold")).pack(pady=10)
-tk.Label(root, textvariable=status_var, fg="green").pack()
-
-tk.Button(root, text="选择共享目录", width=30, command=choose_dir).pack(pady=10)
-dir_label = tk.Label(root, text="未选择共享目录", fg="blue")
-dir_label.pack()
-
-tk.Button(root, text="📁 只读文件服务", width=30, command=lambda: tray_action(run_readonly)).pack(pady=5)
-tk.Button(root, text="✏️ 允许全部操作", width=30, command=lambda: tray_action(run_all)).pack(pady=5)
-tk.Button(root, text="🔐 启用账号密码", width=30, command=lambda: tray_action(run_auth)).pack(pady=5)
-tk.Button(root, text="⛔ 停止文件服务", width=30, command=lambda: tray_action(stop_dufs_fast)).pack(pady=5)
-tk.Button(root, text="🧲 最小化到托盘", width=30, command=minimize_to_tray).pack(pady=15)
-tk.Button(root, text="❌ 停止并退出", width=30, command=exit_app).pack()
-
-setup_tray()
 root.mainloop()
