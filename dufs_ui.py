@@ -12,8 +12,8 @@ import pystray
 from PIL import Image
 
 # ================= 路径 =================
-if getattr(sys, 'frozen', False):  # 判断是否是打包后的程序
-    BASE_DIR = sys._MEIPASS  # 使用 PyInstaller 提供的临时目录
+if getattr(sys, 'frozen', False):
+    BASE_DIR = sys._MEIPASS
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 
@@ -31,18 +31,16 @@ tray_icon = None
 current_dir = BASE_DIR
 
 # ================= 工具 =================
+def set_state(state, text=None):
+    global current_state
+    current_state = state
+    if text:
+        root.after(0, lambda: status_var.set(text))
+
 def port_used(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.2)
         return s.connect_ex(("127.0.0.1", port)) == 0
-
-def wait_port_release(port, timeout=3):
-    start = time.time()
-    while time.time() - start < timeout:
-        if not port_used(port):
-            return True
-        time.sleep(0.1)
-    return False
 
 def get_local_ip():
     try:
@@ -57,7 +55,9 @@ def get_local_ip():
 def get_public_ip_async(var):
     def worker():
         try:
-            ip = urllib.request.urlopen("https://api.ipify.org", timeout=3).read().decode()
+            ip = urllib.request.urlopen(
+                "https://api.ipify.org", timeout=3
+            ).read().decode()
         except:
             ip = "获取失败"
         root.after(0, lambda: var.set(ip))
@@ -65,22 +65,39 @@ def get_public_ip_async(var):
 
 # ================= DUFS 控制 =================
 def stop_dufs():
-    global dufs_proc, current_state
-    current_state = STATE_STOPPED
+    global dufs_proc
+    set_state(STATE_STOPPED, "已停止")
+
     if dufs_proc and dufs_proc.poll() is None:
         try:
-            dufs_proc.kill()
+            dufs_proc.terminate()
             dufs_proc.wait(timeout=2)
         except:
-            pass
+            try:
+                dufs_proc.kill()
+            except:
+                pass
+
     dufs_proc = None
-    status_var.set("已停止")
 
 def start_dufs_async(extra_args):
-    threading.Thread(target=start_dufs, args=(extra_args,), daemon=True).start()
+    threading.Thread(
+        target=start_dufs,
+        args=(extra_args,),
+        daemon=True
+    ).start()
 
 def start_dufs(extra_args):
-    global dufs_proc, current_state
+    global dufs_proc
+
+    if current_state == STATE_STARTING:
+        return
+
+    if not os.path.exists(DUFS_EXE):
+        root.after(0, lambda: messagebox.showerror(
+            "错误", "未找到 dufs.exe"
+        ))
+        return
 
     stop_dufs()
 
@@ -90,52 +107,59 @@ def start_dufs(extra_args):
         root.after(0, lambda: messagebox.showerror("错误", "端口无效"))
         return
 
-    wait_port_release(port)
+    if port_used(port):
+        root.after(0, lambda: messagebox.showerror(
+            "错误", f"端口 {port} 已被占用"
+        ))
+        return
 
-    current_state = STATE_STARTING
-    root.after(0, lambda: status_var.set("启动中"))
+    set_state(STATE_STARTING, "启动中")
 
     cmd = [DUFS_EXE, current_dir, "--port", str(port)] + extra_args
 
     try:
         dufs_proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,  # 捕获标准输出
-            stderr=subprocess.PIPE,  # 捕获标准错误输出
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW
         )
-        stdout, stderr = dufs_proc.communicate()  # 获取输出
-        if stderr:
-            print(f"Error: {stderr.decode()}")  # 打印错误信息到控制台
     except Exception as e:
+        set_state(STATE_STOPPED)
         root.after(0, lambda: messagebox.showerror("启动失败", str(e)))
         return
 
-    def verify_started():
-        global current_state
-        for _ in range(20):
-            if port_used(port):
-                current_state = STATE_RUNNING
-                local_url = f"http://{get_local_ip()}:{port}"
-                root.after(0, lambda: (
-                    status_var.set("运行中"),
-                    local_addr_var.set(local_url),
-                    public_addr_var.set("查询中…"),
-                    get_public_ip_async(public_addr_var)
-                ))
-                return
-            time.sleep(0.2)
+    threading.Thread(
+        target=wait_for_running,
+        args=(port,),
+        daemon=True
+    ).start()
 
-        current_state = STATE_STOPPED
-        root.after(0, lambda: (
-            status_var.set("启动失败"),
-            messagebox.showerror("错误", "DUFS 未能成功监听端口")
-        ))
+def wait_for_running(port):
+    for _ in range(30):  # 最多 6 秒
+        if dufs_proc and dufs_proc.poll() is not None:
+            break
 
-    threading.Thread(target=verify_started, daemon=True).start()
+        if port_used(port):
+            local_url = f"http://{get_local_ip()}:{port}"
+            set_state(STATE_RUNNING, "运行中")
+            root.after(0, lambda: (
+                local_addr_var.set(local_url),
+                public_addr_var.set("查询中…"),
+                get_public_ip_async(public_addr_var)
+            ))
+            return
+
+        time.sleep(0.2)
+
+    stop_dufs()
+    root.after(0, lambda: messagebox.showerror(
+        "错误", "DUFS 启动失败（未监听端口）"
+    ))
 
 # ================= UI =================
 root = tk.Tk()
+root.withdraw()
 root.title("Dufs 文件服务器")
 root.geometry("580x340")
 root.resizable(False, False)
@@ -228,13 +252,13 @@ def create_tray():
         pystray.MenuItem("显示界面", lambda *_: root.after(0, root.deiconify)),
         pystray.MenuItem("只读服务", lambda *_: start_dufs_async([])),
         pystray.MenuItem("完全访问", lambda *_: start_dufs_async(["--allow-all"])),
-        pystray.MenuItem("账号密码", lambda *_: start_dufs_async(["--auth", "admin:123456"])),
+        pystray.MenuItem("账号密码", lambda *_: start_dufs_async(["-a", "admin:123456@/:rw"])),
         pystray.MenuItem("停止服务", lambda *_: stop_dufs()),
         pystray.MenuItem("退出程序", exit_app)
     )
 
     tray_icon = pystray.Icon("dufs", image, "Dufs 文件服务器", menu)
-    tray_icon.run()
+    tray_icon.run_detached()
 
 def on_close():
     root.withdraw()
@@ -242,5 +266,11 @@ def on_close():
 root.protocol("WM_DELETE_WINDOW", on_close)
 
 threading.Thread(target=create_tray, daemon=True).start()
+def show_main_window():
+    root.deiconify()
+    root.lift()
+    root.focus_force()
+
+root.after(300, show_main_window)  # 300ms 足够
+
 root.mainloop()
-########################################################
