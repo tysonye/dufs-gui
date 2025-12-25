@@ -72,8 +72,12 @@ def stop_dufs():
     dufs_proc = None
 
 
-def start_dufs_async(extra_args):
-    threading.Thread(target=start_dufs, args=(extra_args,), daemon=True).start()
+def start_dufs_async(extra_args, on_ready=None):
+    def runner():
+        start_dufs(extra_args)
+        if on_ready:
+            on_ready()
+    threading.Thread(target=runner, daemon=True).start()
 
 
 def start_dufs(extra_args):
@@ -218,18 +222,20 @@ class DufsUI:
 
         mode = self.mode_var.get()
         args = []
-
         if mode == "可编辑共享":
             args = ["--allow-all"]
         elif mode == "账号密码共享":
             args = ["-a", "admin:123456@/:rw"]
 
+        def on_ready():
+        # 回到主线程再更新 UI
+            self.root.after(0, self.on_service_ready)
+
         try:
-            start_dufs_async(args)
+            start_dufs_async(args, on_ready=on_ready)
         except Exception as e:
             messagebox.showerror("错误", str(e))
-            return
-
+    def on_service_ready(self):
         self.running = True
         self.main_btn.config(text="停止服务")
         self.update_addr()
