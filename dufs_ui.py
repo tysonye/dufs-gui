@@ -1,290 +1,281 @@
 import os
 import sys
-import time
 import socket
-import subprocess
+import time
 import threading
+import subprocess
 import tkinter as tk
-from tkinter import filedialog, messagebox
-import urllib.request
+from tkinter import ttk, filedialog, messagebox
+import requests
 
-import pystray
-from PIL import Image
-
-# ================== 基础配置 ==================
-APP_TITLE = "文件共享工具（本地 / 外网）"
-
-FONT_MAIN = ("Segoe UI", 10)
-FONT_TITLE = ("Segoe UI", 12, "bold")
-FONT_STATUS = ("Segoe UI", 10, "bold")
-
-COLOR_BG = "#f5f6f8"  # 浅灰背景
-COLOR_CARD = "#ffffff"  # 白色卡片
-COLOR_PRIMARY = "#2563eb"  # 蓝色主色
-COLOR_SUCCESS = "#16a34a"  # 绿色
-COLOR_WARN = "#f59e0b"  # 黄色
-COLOR_DANGER = "#dc2626"  # 红色
-COLOR_TEXT = "#111827"  # 文字颜色
-COLOR_SUB = "#6b7280"  # 副文字颜色
-
-if getattr(sys, "frozen", False):
-    BASE_DIR = sys._MEIPASS
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
-
+# ===============================
+# 基础路径
+# ===============================
+BASE_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 DUFS_EXE = os.path.join(BASE_DIR, "dufs.exe")
 ICON_PATH = os.path.join(BASE_DIR, "icon.ico")
 
-# ================== 全局状态 ==================
+# ===============================
+# ===== 来自 dufs_ui启动.py 的服务内核（原样逻辑）
+# ===============================
 dufs_proc = None
 current_dir = ""
-tray_icon = None
+port_entry = None
 
 UNSAFE_PORTS = set(range(6660, 6670)) | {21, 22, 25, 10080, 31337}
 
-# ================== 工具函数 ==================
-def try_bind(port):
+
+def try_bind(port: int) -> bool:
+    if port in UNSAFE_PORTS:
+        return False
+    s = socket.socket()
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind(("127.0.0.1", port))
-        s.listen(1)
-        return s
-    except:
-        return None
+        s.bind(("0.0.0.0", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
 
-def find_port(start, max_try=30):
-    for i in range(max_try):
-        p = start + i
-        if p in UNSAFE_PORTS:
-            continue
-        s = try_bind(p)
-        if s:
-            return p, s
-    return None, None
 
-def wait_http(port, timeout=3):
+def find_port(start: int, max_try=30) -> int:
+    port = start
+    for _ in range(max_try):
+        if try_bind(port):
+            return port
+        port += 1
+    raise RuntimeError("未找到可用端口")
+
+
+def wait_http(port: int, timeout=3) -> bool:
     end = time.time() + timeout
+    url = f"http://127.0.0.1:{port}"
     while time.time() < end:
         try:
-            socket.create_connection(("127.0.0.1", port), 0.5).close()
-            return True
-        except:
-            time.sleep(0.1)
+            r = requests.get(url, timeout=0.5)
+            if r.status_code < 500:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.2)
     return False
 
-def copy_text(var):
-    root.clipboard_clear()
-    root.clipboard_append(var.get())
 
-# ================== IP ==================
-def get_public_ip_async(var, port):
-    def worker():
-        try:
-            ip = urllib.request.urlopen("https://api.ipify.org", timeout=3).read().decode()
-            url = f"http://{ip}:{port}"
-        except:
-            url = "获取失败"
-        root.after(0, lambda: var.set(url))
-    threading.Thread(target=worker, daemon=True).start()
-
-# ================== DUFS 控制 ==================
 def stop_dufs():
     global dufs_proc
     if dufs_proc and dufs_proc.poll() is None:
+        dufs_proc.terminate()
         try:
-            dufs_proc.terminate()
             dufs_proc.wait(timeout=2)
-        except:
-            try:
-                dufs_proc.kill()
-            except:
-                pass
+        except subprocess.TimeoutExpired:
+            dufs_proc.kill()
     dufs_proc = None
-    status_var.set("🔴 已停止共享")
-    status_label.config(fg=COLOR_DANGER)
 
-def start_dufs_async(args):
-    threading.Thread(target=start_dufs, args=(args,), daemon=True).start()
 
-def start_dufs(args):
+def start_dufs_async(extra_args):
+    threading.Thread(target=start_dufs, args=(extra_args,), daemon=True).start()
+
+
+def start_dufs(extra_args):
     global dufs_proc
-
-    if not os.path.isdir(current_dir):
-        messagebox.showerror("提示", "请先选择要共享的文件夹")
-        return
-
-    try:
-        base_port = int(port_entry.get())
-    except:
-        messagebox.showerror("提示", "端口号无效")
-        return
-
     stop_dufs()
-    status_var.set("🟠 正在启动共享…")
-    status_label.config(fg=COLOR_WARN)
 
-    port, sock = find_port(base_port)
-    if not sock:
-        messagebox.showerror("失败", "未找到可用端口")
-        return
+    port = int(port_entry.get())
+    port = find_port(port)
 
-    sock.close()
+    cmd = [
+        DUFS_EXE,
+        current_dir,
+        "--port",
+        str(port)
+    ] + extra_args
 
     dufs_proc = subprocess.Popen(
-        [DUFS_EXE, current_dir, "--port", str(port)] + args,
+        cmd,
+        cwd=BASE_DIR,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        creationflags=subprocess.CREATE_NO_WINDOW
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     )
 
     if not wait_http(port):
         stop_dufs()
-        messagebox.showerror("失败", "共享启动失败")
-        return
+        raise RuntimeError("DUFS 启动失败")
 
-    def ok():
-        port_entry.delete(0, tk.END)
-        port_entry.insert(0, str(port))
-        local_addr_var.set(f"http://127.0.0.1:{port}")
-        public_addr_var.set("正在获取…")
-        get_public_ip_async(public_addr_var, port)
-        status_var.set("🟢 已开始共享")
-        status_label.config(fg=COLOR_SUCCESS)
+    port_entry.set(port)
 
-    root.after(0, ok)
 
-# ================== 托盘 ==================
-def show_window(icon=None, item=None):
-    root.after(0, root.deiconify)
+# ===============================
+# ===== UI 层（来自原 dufs_ui.py）
+# ===============================
+class DummyPort:
+    """用于桥接 UI port_var 给启动内核"""
+    def __init__(self, tk_var):
+        self.var = tk_var
 
-def quit_app(icon=None, item=None):
-    stop_dufs()
-    if tray_icon:
-        tray_icon.stop()
-    os._exit(0)
+    def get(self):
+        return self.var.get()
 
-def create_tray():
-    global tray_icon
-    image = Image.open(ICON_PATH)
-    menu = pystray.Menu(
-        pystray.MenuItem("显示界面", show_window),
-        pystray.MenuItem("只读共享（推荐）", lambda *_: start_dufs_async([])),
-        pystray.MenuItem("可编辑共享", lambda *_: start_dufs_async(["--allow-all"])),
-        pystray.MenuItem("账号密码访问", lambda *_: start_dufs_async(["-a", "admin:123456@/:rw"])),
-        pystray.MenuItem("停止共享", lambda *_: stop_dufs()),
-        pystray.MenuItem("退出程序", quit_app),
-    )
-    tray_icon = pystray.Icon("dufs", image, "文件共享工具", menu)
-    tray_icon.run()
+    def set(self, v):
+        self.var.set(str(v))
 
-def ensure_tray():
-    if tray_icon is None:
-        threading.Thread(target=create_tray, daemon=True).start()
 
-# ================== 窗口行为 ==================
-def on_minimize(event):
-    if root.state() == "iconic":
-        root.withdraw()
-        ensure_tray()
+class DufsUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("DUFS 文件共享")
+        self.root.geometry("640x420")
+        self.root.resizable(False, False)
 
-def on_close():
-    quit_app()
+        if os.path.exists(ICON_PATH):
+            self.root.iconbitmap(ICON_PATH)
 
-# ================== UI ==================
-root = tk.Tk()
-root.title(APP_TITLE)
-root.geometry("620x420")
-root.configure(bg=COLOR_BG)
-root.resizable(False, False)
+        self.running = False
 
-if os.path.exists(ICON_PATH):
-    root.iconbitmap(ICON_PATH)
+        self.dir_var = tk.StringVar()
+        self.port_var = tk.StringVar(value="5000")
+        self.mode_var = tk.StringVar(value="只读共享")
 
-# ====== 标题 ======
-title = tk.Label(root, text="文件共享工具", font=FONT_TITLE, bg=COLOR_BG, fg=COLOR_TEXT)
-title.pack(anchor="w", padx=20, pady=(15, 5))
+        self.build_ui()
 
-subtitle = tk.Label(
-    root,
-    text="快速共享本地文件夹，支持局域网和外网访问",
-    font=FONT_MAIN,
-    bg=COLOR_BG,
-    fg=COLOR_SUB
-)
-subtitle.pack(anchor="w", padx=20, pady=(0, 10))
+    # ---------- UI ----------
+    def build_ui(self):
+        main = ttk.Frame(self.root, padding=12)
+        main.pack(fill="both", expand=True)
 
-# ====== 卡片容器 ======
-card = tk.Frame(root, bg=COLOR_CARD)
-card.pack(fill="both", expand=True, padx=20, pady=10)
+        # 目录 + 端口
+        row1 = ttk.Frame(main)
+        row1.pack(fill="x", pady=5)
 
-# ====== 目录选择 ======
-tk.Label(card, text="要共享的文件夹", bg=COLOR_CARD, font=FONT_MAIN).pack(anchor="w", padx=15, pady=(15, 5))
-dir_row = tk.Frame(card, bg=COLOR_CARD)
-dir_row.pack(fill="x", padx=15)
+        ttk.Label(row1, text="共享目录").pack(side="left")
+        ttk.Entry(row1, textvariable=self.dir_var, width=42).pack(side="left", padx=5)
+        ttk.Button(row1, text="浏览", command=self.choose_dir).pack(side="left")
 
-dir_entry = tk.Entry(dir_row, font=FONT_MAIN)
-dir_entry.pack(side="left", fill="x", expand=True)
+        ttk.Label(row1, text="端口").pack(side="left", padx=(10, 2))
+        ttk.Entry(row1, textvariable=self.port_var, width=8).pack(side="left")
 
-def choose_dir():
-    global current_dir
-    d = filedialog.askdirectory()
-    if d:
-        current_dir = d
-        dir_entry.delete(0, tk.END)
-        dir_entry.insert(0, d)
+        # 模式 + 启动
+        row2 = ttk.Frame(main)
+        row2.pack(fill="x", pady=10)
 
-tk.Button(dir_row, text="浏览", command=choose_dir).pack(side="left", padx=8)
+        ttk.Label(row2, text="共享模式").pack(side="left")
+        ttk.Combobox(
+            row2,
+            textvariable=self.mode_var,
+            values=["只读共享", "可编辑共享", "账号密码共享"],
+            state="readonly",
+            width=16
+        ).pack(side="left", padx=5)
 
-# ====== 端口 ======
-tk.Label(card, text="端口（一般无需修改）", bg=COLOR_CARD, font=FONT_MAIN).pack(anchor="w", padx=15, pady=(10, 5))
-port_entry = tk.Entry(card, width=10, font=FONT_MAIN)
-port_entry.insert(0, "5000")
-port_entry.pack(anchor="w", padx=15)
+        self.main_btn = ttk.Button(row2, text="启动服务", command=self.toggle_service)
+        self.main_btn.pack(side="left", padx=15)
 
-# ====== 启动按钮 ======
-btn_row = tk.Frame(card, bg=COLOR_CARD)
-btn_row.pack(pady=15)
+        # 地址显示
+        self.addr_frame = ttk.LabelFrame(main, text="访问地址", padding=10)
+        self.addr_frame.pack(fill="x", pady=10)
+        self.addr_frame.pack_forget()
 
-tk.Button(btn_row, text="🔒 只读共享（推荐）", width=18,
-          command=lambda: start_dufs_async([])).grid(row=0, column=0, padx=5)
-tk.Button(btn_row, text="✏️ 可编辑共享", width=18,
-          command=lambda: start_dufs_async(["--allow-all"])).grid(row=0, column=1, padx=5)
-tk.Button(btn_row, text="🔐 账号密码访问", width=18,
-          command=lambda: start_dufs_async(["-a", "admin:123456@/:rw"])).grid(row=0, column=2, padx=5)
+        self.lan_var = tk.StringVar()
+        self.wan_var = tk.StringVar()
 
-# ====== 状态 ======
-status_var = tk.StringVar(value="⚪ 尚未开始共享")
-status_label = tk.Label(card, textvariable=status_var, font=FONT_STATUS, bg=COLOR_CARD)
-status_label.pack(pady=(5, 10))
+        self.addr_row("内网地址", self.lan_var).pack(fill="x", pady=2)
+        self.addr_row("外网地址", self.wan_var).pack(fill="x", pady=2)
 
-# ====== 地址 ======
-addr_box = tk.Frame(card, bg=COLOR_CARD)
-addr_box.pack(fill="x", padx=15, pady=10)
+        # 底部
+        bottom = ttk.Frame(main)
+        bottom.pack(fill="x", pady=10)
 
-local_addr_var = tk.StringVar(value="-")
-public_addr_var = tk.StringVar(value="-")
+        ttk.Button(bottom, text="退出", command=self.exit_app).pack(side="right")
 
-def addr_row(title, var):
-    r = tk.Frame(addr_box, bg=COLOR_CARD)
-    r.pack(fill="x", pady=4)
-    tk.Label(r, text=title, bg=COLOR_CARD, width=22, anchor="w").pack(side="left")
-    tk.Label(r, textvariable=var, bg=COLOR_CARD, fg=COLOR_PRIMARY).pack(side="left", fill="x", expand=True)
-    tk.Button(r, text="复制", command=lambda: copy_text(var)).pack(side="right")
+    def addr_row(self, label, var):
+        f = ttk.Frame(self.addr_frame)
+        ttk.Label(f, text=label, width=8).pack(side="left")
+        e = ttk.Entry(f, textvariable=var, state="readonly")
+        e.pack(side="left", fill="x", expand=True, padx=5)
+        ttk.Button(f, text="复制", command=lambda: self.copy(var.get())).pack(side="left")
+        return f
 
-addr_row("局域网访问地址", local_addr_var)
-addr_row("外网访问地址", public_addr_var)
+    # ---------- 行为 ----------
+    def choose_dir(self):
+        d = filedialog.askdirectory()
+        if d:
+            self.dir_var.set(d)
 
-# ====== 底部 ======
-bottom = tk.Frame(root, bg=COLOR_BG)
-bottom.pack(fill="x", pady=10)
+    def toggle_service(self):
+        if not self.running:
+            self.start_service()
+        else:
+            self.stop_service()
 
-tk.Button(bottom, text="停止共享", width=18, command=stop_dufs).pack(side="left", padx=10)
-tk.Button(bottom, text="最小化到托盘", width=18,
-          command=lambda: (root.withdraw(), ensure_tray())).pack(side="left", padx=10)
-tk.Button(bottom, text="停止共享并退出", width=18,
-          fg="white", bg=COLOR_DANGER,
-          command=on_close).pack(side="right", padx=10)
+    def start_service(self):
+        global current_dir, port_entry
+        if not self.dir_var.get():
+            messagebox.showwarning("提示", "请选择共享目录")
+            return
 
-root.bind("<Unmap>", on_minimize)
-root.protocol("WM_DELETE_WINDOW", on_close)
-root.mainloop()
+        current_dir = self.dir_var.get()
+        port_entry = DummyPort(self.port_var)
+
+        mode = self.mode_var.get()
+        args = []
+
+        if mode == "可编辑共享":
+            args = ["--allow-all"]
+        elif mode == "账号密码共享":
+            args = ["-a", "admin:123456@/:rw"]
+
+        try:
+            start_dufs_async(args)
+        except Exception as e:
+            messagebox.showerror("错误", str(e))
+            return
+
+        self.running = True
+        self.main_btn.config(text="停止服务")
+        self.update_addr()
+        self.addr_frame.pack(fill="x", pady=10)
+
+    def stop_service(self):
+        stop_dufs()
+        self.running = False
+        self.main_btn.config(text="启动服务")
+        self.addr_frame.pack_forget()
+
+    def update_addr(self):
+        port = self.port_var.get()
+        self.lan_var.set(f"http://{self.get_lan_ip()}:{port}")
+        threading.Thread(target=self.update_wan, daemon=True).start()
+
+    def update_wan(self):
+        try:
+            ip = requests.get("https://api.ipify.org", timeout=3).text
+            self.wan_var.set(f"http://{ip}:{self.port_var.get()}")
+        except Exception:
+            self.wan_var.set("获取失败")
+
+    def get_lan_ip(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        except Exception:
+            return "127.0.0.1"
+        finally:
+            s.close()
+
+    def copy(self, text):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+
+    def exit_app(self):
+        stop_dufs()
+        self.root.destroy()
+
+
+# ===============================
+# 入口
+# ===============================
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = DufsUI(root)
+    root.mainloop()

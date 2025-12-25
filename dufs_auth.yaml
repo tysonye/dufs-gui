@@ -1,0 +1,7 @@
+server:
+  port: 5000
+users:
+- password: '123456'
+  readonly: false
+  root: E:/Backup
+  username: admin
