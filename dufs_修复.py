@@ -896,6 +896,43 @@ class DufsMultiGUI(QMainWindow):
                 if QMessageBox.question(self, "提示", "服务已更新，是否重新启动服务？") == QMessageBox.Yes:
                     self.start_service(index)
     
+    def delete_service(self):
+        """删除选中的服务"""
+        # 获取当前选中的服务
+        selected_items = self.service_tree.selectedItems()
+        if not selected_items:
+            QMessageBox.information(self, "提示", "请先选择要删除的服务")
+            return
+        
+        # 单选模式下，只处理第一个选中项
+        selected_item = selected_items[0]
+        # 从树项中获取服务在self.services列表中的实际索引
+        index = selected_item.data(0, Qt.UserRole)
+        
+        # 确保索引有效
+        if not isinstance(index, int) or index < 0 or index >= len(self.services):
+            QMessageBox.critical(self, "错误", "无效的服务索引")
+            return
+        
+        service = self.services[index]
+        
+        # 如果服务正在运行，先停止
+        if service.status == "运行中":
+            self.stop_service(index)
+        
+        # 显示确认框
+        if QMessageBox.question(self, "提示", f"确定要删除服务 '{service.name}' 吗？") != QMessageBox.Yes:
+            return
+        
+        # 删除服务
+        del self.services[index]
+        
+        # 更新服务列表
+        self.status_updated.emit()
+        
+        # 更新状态栏
+        self.status_bar.showMessage(f"已删除服务: {service.name}")
+    
     def start_service_from_button(self):
         """从主面板按钮启动服务（修复：获取选中的服务）"""
         # 获取当前选中的服务
@@ -938,45 +975,8 @@ class DufsMultiGUI(QMainWindow):
         # 调用带索引的停止服务方法
         self.stop_service(index)
     
-    def delete_service(self):
-        """删除选中的服务"""
-        # 获取当前选中的服务
-        selected_items = self.service_tree.selectedItems()
-        if not selected_items:
-            QMessageBox.information(self, "提示", "请先选择要删除的服务")
-            return
-        
-        # 单选模式下，只处理第一个选中项
-        selected_item = selected_items[0]
-        # 从树项中获取服务在self.services列表中的实际索引
-        index = selected_item.data(0, Qt.UserRole)
-        
-        # 确保索引有效
-        if not isinstance(index, int) or index < 0 or index >= len(self.services):
-            QMessageBox.critical(self, "错误", "无效的服务索引")
-            return
-        
-        service = self.services[index]
-        
-        # 如果服务正在运行，先停止
-        if service.status == "运行中":
-            self.stop_service(index)
-        
-        # 显示确认框
-        if QMessageBox.question(self, "提示", f"确定要删除服务 '{service.name}' 吗？") != QMessageBox.Yes:
-            return
-        
-        # 删除服务
-        del self.services[index]
-        
-        # 更新服务列表
-        self.status_updated.emit()
-        
-        # 更新状态栏
-        self.status_bar.showMessage(f"已删除服务: {service.name}")
-    
     def start_service(self, index=None):
-        """启动选中的服务"""
+        """启动指定索引的服务"""
         # 如果没有提供索引，获取当前选中的服务索引
         if index is None:
             selected_items = self.service_tree.selectedItems()
@@ -1169,7 +1169,7 @@ class DufsMultiGUI(QMainWindow):
             QMessageBox.critical(self, "错误", error_msg)
     
     def stop_service(self, index=None):
-        """停止选中的服务"""
+        """停止指定索引的服务"""
         # 检查服务列表是否为空
         if not self.services:
             QMessageBox.information(self, "提示", "没有服务正在运行")
