@@ -161,12 +161,20 @@ QTreeWidget {
     border-radius: 4px;
     padding: 0px;  /* 移除内边距，避免挤压复选框 */
     alternate-background-color: #F8F9FA;  /* 隔行变色优化 */
+    outline: none; /* 移除控件焦点轮廓 */
 }
 
 /* 树项基础样式 - 修复复选框挤压 */
 QTreeWidget::item {
     padding: 4px 0px 4px 0px;  /* 仅上下内边距，左右无内边距 */
     height: 28px;  /* 固定行高，确保复选框垂直居中 */
+    border: none; /* 确保基础项无边框 */
+    outline: none; /* 确保基础项无轮廓 */
+}
+
+/* 移除树项指示器，避免服务名称前面空白 */
+QTreeWidget::branch {
+    background: transparent;
 }
 
 /* 树项选中样式 - 优化配色（柔和蓝 + 渐变） */
@@ -175,12 +183,28 @@ QTreeWidget::item:selected {
     color: white;
     border-radius: 4px;  /* 圆角提升质感 */
     border: none;  /* 移除边框，避免选中时显示黑色边框 */
+    outline: none; /* 移除焦点轮廓 */
+    selection-background-color: transparent; /* 透明选中背景，使用自定义背景 */
+    selection-color: white; /* 选中文字颜色 */
 }
 
 /* 树项hover样式 - 补充未选中行的hover效果 */
 QTreeWidget::item:!selected:hover {
     background-color: #E8F4FD;
     border-radius: 4px;
+    border: none; /* 确保hover项无边框 */
+    outline: none; /* 确保hover项无轮廓 */
+}
+
+/* 移除树形控件的焦点矩形 */
+QTreeWidget:focus {
+    outline: none;
+}
+
+/* 移除树形控件项的焦点矩形 */
+QTreeWidget::item:focus {
+    outline: none;
+    border: none;
 }
 
 /* 复选框样式 - 适配树控件列布局 */
@@ -402,7 +426,7 @@ class DufsServiceDialog(QDialog):
         pwd_label.setAlignment(Qt.AlignVCenter)
         auth_layout.addWidget(pwd_label, 1, 0)
         self.password_edit = QLineEdit()
-        self.password_edit.setEchoMode(QLineEdit.Password)
+        self.password_edit.setEchoMode(QLineEdit.Normal)
         self.password_edit.setPlaceholderText("请输入认证密码（留空不启用认证）")
         auth_layout.addWidget(self.password_edit, 1, 1)
         
@@ -523,16 +547,29 @@ class DufsServiceDialog(QDialog):
         username = self.username_edit.text().strip()
         password = self.password_edit.text().strip()
         if username and password:
+            # 用户名限制：长度在3-20个字符之间，包含至少一个字母
+            if len(username) < 3 or len(username) > 20:
+                QMessageBox.critical(self, "错误", "用户名长度必须在3-20个字符之间")
+                return
             if not any(c.isalpha() for c in username):
                 QMessageBox.critical(self, "错误", "用户名必须包含至少一个字母")
+                return
+            
+            # 密码限制：长度在6-30个字符之间，包含至少一个字母和一个数字
+            if len(password) < 6 or len(password) > 30:
+                QMessageBox.critical(self, "错误", "密码长度必须在6-30个字符之间")
                 return
             if not any(c.isalpha() for c in password):
                 QMessageBox.critical(self, "错误", "密码必须包含至少一个字母")
                 return
+            if not any(c.isdigit() for c in password):
+                QMessageBox.critical(self, "错误", "密码必须包含至少一个数字")
+                return
+            
             service.auth_rules.append({
                 "username": username,
                 "password": password,
-                "paths": [("/", "rw")]
+                "paths": ["/"]
             })
         
         self.service = service
@@ -632,18 +669,26 @@ class DufsMultiGUI(QMainWindow):
         self.service_tree.setSelectionMode(QTreeWidget.SingleSelection)
         # 设置为整行选择模式
         self.service_tree.setSelectionBehavior(QTreeWidget.SelectRows)
-        # 调整各列宽度（索引已改变，原索引1-6变为0-5）
-        self.service_tree.setColumnWidth(0, 150)
-        self.service_tree.setColumnWidth(1, 80)
-        self.service_tree.setColumnWidth(2, 100)
-        self.service_tree.setColumnWidth(3, 150)
-        self.service_tree.setColumnWidth(4, 120)
-        self.service_tree.setColumnWidth(5, 300)
+        # 移除缩进，避免服务名称前面空白
+        self.service_tree.setIndentation(0)
+        # 调整各列宽度，确保初始界面不需要水平滚动条
+        self.service_tree.setColumnWidth(0, 140)  # 服务名称
+        self.service_tree.setColumnWidth(1, 70)   # 端口
+        self.service_tree.setColumnWidth(2, 90)   # 状态
+        self.service_tree.setColumnWidth(3, 140)  # 认证
+        self.service_tree.setColumnWidth(4, 110)  # 权限
+        self.service_tree.setColumnWidth(5, 250)  # 服务路径
         
         # 设置表头标签居中显示
         header = self.service_tree.header()
         for i in range(self.service_tree.columnCount()):
             header.setDefaultAlignment(Qt.AlignCenter)
+        
+        # 设置表头拉伸策略，最后一列自动拉伸
+        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        # 其他列固定宽度，不允许用户调整
+        for i in range(5):
+            header.setSectionResizeMode(i, QHeaderView.Fixed)
         
         service_layout.addWidget(self.service_tree)
         main_layout.addWidget(service_group)
@@ -769,8 +814,8 @@ class DufsMultiGUI(QMainWindow):
     
     def on_item_entered(self, item, column):
         """处理鼠标进入项事件，显示悬浮提示（修复列索引错误）"""
-        # 认证列（索引4）、服务路径列（索引6）显示悬浮提示
-        if column == 4 or column == 5:
+        # 认证列（索引3）、服务路径列（索引5）显示悬浮提示
+        if column == 3 or column == 5:
             # 获取当前项的完整文本
             full_text = item.text(column)
             
@@ -1096,17 +1141,11 @@ class DufsMultiGUI(QMainWindow):
                 username = rule["username"].strip()
                 password = rule["password"].strip()
                 
-                # 收集该用户的所有路径规则
-                path_rules = []
-                for path, perm in rule["paths"]:
-                    # 修复Windows路径分隔符并去除空白字符
-                    fixed_path = path.replace("\\", "/").strip()
-                    # 构建单个路径规则（只包含路径，权限通过全局参数控制）
-                    path_rules.append(fixed_path)
-                
-                # 构建完整的auth参数（格式：user:pass@path1,path2）
-                auth_rule = f"{username}:{password}@{','.join(path_rules)}"
-                command.extend(["--auth", auth_rule])
+                # 确保用户名和密码都不为空
+                if username and password:
+                    # 修复认证参数格式：使用/作为路径，而不是./
+                    auth_rule = f"{username}:{password}@/"
+                    command.extend(["--auth", auth_rule])
         
         # 添加服务根目录（dufs.exe [options] [path]）
         command.append(service.serve_path)
