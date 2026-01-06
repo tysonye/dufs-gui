@@ -207,34 +207,7 @@ QTreeWidget::item:focus {
     border: none;
 }
 
-/* 复选框样式 - 适配树控件列布局 */
-QCheckBox {
-    spacing: 8px;
-    font-size: 12px;
-}
 
-QCheckBox::indicator {
-    width: 18px;  /* 增大复选框尺寸，提升点击区域 */
-    height: 18px;
-    border-radius: 4px;
-    border: 1px solid #BDC3C7;
-    background-color: white;  /* 增加白色背景，提升视觉 */
-    margin-left: 3px;  /* 微调复选框位置，避免贴边 */
-}
-
-/* 复选框选中状态 - 修复对勾显示 */
-QCheckBox::indicator:checked {
-    background-color: #4A90E2;
-    border-color: #4A90E2;
-    image: url(:/qt-project.org/styles/commonstyle/images/checkbox-check.png);
-    /* 备用：如果默认对勾不显示，用自定义对勾（可替换为base64或本地路径） */
-    /* image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIj48cGF0aCBmaWxsPSIjZmZmIiBkPSJNMjkxLjQgNDkwLjljLTguNyA4LjctMjIuOSA4LjctMzEuNiAwTDEyMS42IDMxMS4ybC00Ny40IDQ3LjRjLTguNyA4LjctMjIuOSA4LjctMzEuNiAwbC04MC04MGMtOC43LTguNy04LjctMjIuOSAwLTMxLjZsMjQzLjQtMjQzLjRjOC43LTguNyAyMi45LTguNyAzMS42IDBsMzIgMzJjOC43IDguNyA4LjcgMjIuOSAwIDMxLjZsLTEwMi40IDEwMi40YzguNyA4LjcgOC43IDIyLjkgMCAzMS42ek0yNTYgMTM0LjZjLTY3LjQgMC0xMjIgNTQuNi0xMjIgMTIyLjRzNTQuNiAxMjIuNCAxMjIgMTIyLjRzMTIyLjQtNTQuNiAxMjIuNC0xMjIuNHMtNTQuNi0xMjIuNC0xMjIuNC0xMjIuNHoiLz48L3N2Zz4=); */
-}
-
-/* 复选框hover状态 - 提升交互 */
-QCheckBox::indicator:hover {
-    border-color: #4A90E2;
-}
 
 /* 状态栏样式 */
 QStatusBar {
@@ -840,7 +813,7 @@ class DufsMultiGUI(QMainWindow):
     
     
     def update_service_list(self):
-        """更新服务列表（补充：新增/编辑后保持复选框与行选择同步）"""
+        """更新服务列表"""
         # 记录当前选中的服务名称（用于刷新后恢复选择）
         selected_names = [item.text(0) for item in self.service_tree.selectedItems()]
         
