@@ -316,12 +316,49 @@ def get_resource_path(filename):
     Returns:
         str: 资源文件的绝对路径
     """
+    path = ""
     if hasattr(sys, '_MEIPASS'):
         # 单文件打包模式，从临时目录加载
-        return os.path.join(sys._MEIPASS, filename)
+        path = os.path.join(sys._MEIPASS, filename)
+        
+        # 检查文件是否存在
+        if not os.path.exists(path):
+            # 尝试在当前目录查找
+            current_dir = os.getcwd()
+            alternative_path = os.path.join(current_dir, filename)
+            if os.path.exists(alternative_path):
+                path = alternative_path
+            else:
+                # 尝试在可执行文件所在目录查找
+                exe_dir = os.path.dirname(sys.executable)
+                alternative_path = os.path.join(exe_dir, filename)
+                if os.path.exists(alternative_path):
+                    path = alternative_path
+                else:
+                    # 检查当前目录下的dufs目录
+                    dufs_dir = os.path.join(current_dir, "dufs")
+                    alternative_path = os.path.join(dufs_dir, filename)
+                    if os.path.exists(alternative_path):
+                        path = alternative_path
+                    else:
+                        # 检查可执行文件所在目录下的dufs目录
+                        dufs_dir = os.path.join(exe_dir, "dufs")
+                        alternative_path = os.path.join(dufs_dir, filename)
+                        if os.path.exists(alternative_path):
+                            path = alternative_path
     else:
         # 开发模式，从程序所在目录加载
-        return os.path.abspath(os.path.join(os.path.dirname(__file__), filename))
+        path = os.path.abspath(os.path.join(os.path.dirname(__file__), filename))
+        
+        # 检查文件是否存在
+        if not os.path.exists(path):
+            # 检查当前目录下的dufs目录
+            dufs_dir = os.path.join(os.path.dirname(__file__), "dufs")
+            alternative_path = os.path.join(dufs_dir, filename)
+            if os.path.exists(alternative_path):
+                path = alternative_path
+    
+    return path
 
 class DufsService:
     """单个Dufs服务实例"""
@@ -419,6 +456,14 @@ class DufsServiceDialog(QDialog):
         path_layout.setSpacing(8)
         self.path_edit = QLineEdit()
         self.path_edit.setPlaceholderText("请选择或输入文件服务路径")
+        # 添加服务时设置默认推荐服务路径，使用当前用户的文档目录
+        if not self.service:
+            default_path = os.path.expanduser("~")
+            # 检查默认路径是否存在
+            if not os.path.exists(default_path):
+                # 如果不存在，使用程序当前目录
+                default_path = os.getcwd()
+            self.path_edit.setText(default_path)
         path_btn = QPushButton("浏览")
         path_btn.setObjectName("PathBrowseBtn")
         path_btn.clicked.connect(self.browse_path)
@@ -594,8 +639,6 @@ class DufsServiceDialog(QDialog):
         """确认保存"""
         name = self.name_edit.text().strip()
         serve_path = self.path_edit.text().strip()
-        # 规范化服务路径，将相对路径转换为绝对路径
-        serve_path = os.path.abspath(serve_path)
         port = self.port_edit.text().strip()
         
         if not name:
@@ -604,6 +647,19 @@ class DufsServiceDialog(QDialog):
         
         if not serve_path:
             QMessageBox.critical(self, "错误", "服务路径不能为空")
+            return
+        
+        # 规范化服务路径，将相对路径转换为绝对路径
+        serve_path = os.path.abspath(serve_path)
+        
+        # 检查路径是否存在
+        if not os.path.exists(serve_path):
+            QMessageBox.critical(self, "错误", f"服务路径 '{serve_path}' 不存在，请选择有效的路径")
+            return
+        
+        # 检查路径是否为目录
+        if not os.path.isdir(serve_path):
+            QMessageBox.critical(self, "错误", f"服务路径 '{serve_path}' 不是有效的目录，请选择目录路径")
             return
         
         if not port.isdigit():
@@ -1901,6 +1957,8 @@ Categories=Utility;
             
             # 构建命令
             command = self._build_command(service, available_port)
+            if command is None:
+                return
             
             # 启动服务进程
             if not self._start_service_process(service, command):
@@ -2031,6 +2089,14 @@ Categories=Utility;
         # 使用dufs.exe的完整路径
         # 使用统一的资源文件访问函数
         dufs_path = get_resource_path("dufs.exe")
+        
+        # 检查dufs.exe是否存在
+        self.append_log(f"获取到的dufs.exe路径: {dufs_path}", service_name=service.name)
+        if not os.path.exists(dufs_path):
+            self.append_log(f"dufs.exe不存在于路径: {dufs_path}", error=True, service_name=service.name)
+            QMessageBox.critical(self, "错误", f"dufs.exe不存在于路径: {dufs_path}")
+            return None
+        
         command = [dufs_path]
         
         # 基本参数，去除多余空白字符
@@ -2045,7 +2111,7 @@ Categories=Utility;
         if not service_serve_path:
             self.append_log(f"启动服务失败: 服务路径不能为空", error=True, service_name=service.name)
             QMessageBox.critical(self, "错误", f"启动服务失败: 服务路径不能为空")
-            return False
+            return None
         
         # 添加基本参数（dufs不支持--name参数）
         command.extend(["--port", service_port])
@@ -2065,7 +2131,7 @@ Categories=Utility;
                 command.append("--allow-search")
             if hasattr(service, 'allow_symlink') and service.allow_symlink:
                 command.append("--allow-symlink")
-            if service.allow_archive:
+            if hasattr(service, 'allow_archive') and service.allow_archive:
                 command.append("--allow-archive")
         
         # 多用户权限
@@ -2092,15 +2158,19 @@ Categories=Utility;
         # 通过源码分析，默认格式为：$remote_addr "$request" $status
         
         # 添加服务根目录（dufs.exe [options] [path]）
-        # 使用shlex.quote确保路径中的特殊字符被正确处理
-        import shlex
-        safe_serve_path = shlex.quote(service_serve_path)
-        command.append(safe_serve_path)
+        # 在Windows系统上直接使用路径，不使用shlex.quote，因为它会产生单引号包裹的路径
+        # 确保路径中的反斜杠被正确处理
+        command.append(service_serve_path)
         
         return command
     
     def _start_service_process(self, service, command):
         """启动服务进程"""
+        # 检查命令是否有效
+        if not command or not isinstance(command, list):
+            self.append_log(f"启动服务失败: 无效的命令", error=True, service_name=service.name)
+            return False
+        
         # 检查服务是否已经在运行，如果是则直接返回
         if service.status == "运行中":
             self.append_log(f"服务 {service.name} 已经在运行中，无需重复启动", service_name=service.name, service=service)
@@ -2156,8 +2226,9 @@ Categories=Utility;
         self.append_log(f"启动 DUFS...", service_name=service.name)
         
         # 启动进程 - 使用正确的参数
-        # 设置工作目录为程序所在目录，确保dufs.exe能找到所需依赖
-        cwd = os.path.dirname(dufs_path)
+        # 不要设置工作目录为dufs.exe所在目录，特别是在单文件打包模式下，这可能导致权限问题
+        # 直接使用当前工作目录或服务路径作为工作目录
+        cwd = service.serve_path
         
         # 启动进程，捕获输出以支持实时日志
         creation_flags = 0
@@ -2167,20 +2238,25 @@ Categories=Utility;
         # 启动服务进程
         self.append_log(f"执行命令: {' '.join(command)}", service_name=service.name)
         
-        service.process = subprocess.Popen(
-            command,
-            cwd=cwd,  # 设置工作目录
-            shell=False,  # 不使用shell执行
-            env=os.environ.copy(),  # 复制当前环境变量
-            stdout=subprocess.PIPE,  # 捕获标准输出
-            stderr=subprocess.PIPE,  # 捕获标准错误
-            text=True,  # 使用文本模式而不是字节模式
-            bufsize=1,  # 行缓冲，确保实时获取日志
-            universal_newlines=True,  # 确保正确处理换行符
-            creationflags=creation_flags  # 隐藏命令窗口
-        )
-        
-        self.append_log(f"进程已启动，PID: {service.process.pid}", service_name=service.name)
+        try:
+            service.process = subprocess.Popen(
+                command,
+                cwd=cwd,  # 使用服务路径作为工作目录
+                shell=False,  # 不使用shell执行
+                env=os.environ.copy(),  # 复制当前环境变量
+                stdout=subprocess.PIPE,  # 捕获标准输出
+                stderr=subprocess.PIPE,  # 捕获标准错误
+                text=True,  # 使用文本模式而不是字节模式
+                bufsize=1,  # 行缓冲，确保实时获取日志
+                universal_newlines=True,  # 确保正确处理换行符
+                creationflags=creation_flags  # 隐藏命令窗口
+            )
+            
+            self.append_log(f"进程已启动，PID: {service.process.pid}", service_name=service.name)
+        except Exception as e:
+            self.append_log(f"启动进程失败: {str(e)}", error=True, service_name=service.name)
+            QMessageBox.critical(self, "错误", f"启动进程失败: {str(e)}")
+            return False
         
         # 启动日志读取线程
         self.append_log(f"启动日志读取线程", service_name=service.name)
@@ -2204,39 +2280,53 @@ Categories=Utility;
         timer.deleteLater()
         
         # 检查进程是否还在运行
-        poll_result = service.process.poll()
-        self.append_log(f"进程状态检查结果: {poll_result}", service_name=service.name)
-        if poll_result is not None:
-            # 进程已退出，说明启动失败
-            # 尝试读取stdout和stderr获取详细错误信息
-            stdout_output = ""
-            stderr_output = ""
-            try:
-                # 尝试读取所有剩余输出
-                if service.process.stdout:
-                    stdout_output = service.process.stdout.read()
-                if service.process.stderr:
-                    stderr_output = service.process.stderr.read()
+        # 使用线程锁保护共享资源
+        with service.lock:
+            if service.process is None:
+                self.append_log(f"服务进程已被释放，跳过状态检查", service_name=service.name)
+                return False
+            
+            poll_result = service.process.poll()
+            self.append_log(f"进程状态检查结果: {poll_result}", service_name=service.name)
+            if poll_result is not None:
+                # 进程已退出，说明启动失败
+                # 尝试读取stdout和stderr获取详细错误信息
+                stdout_output = ""
+                stderr_output = ""
+                try:
+                    # 尝试读取所有剩余输出
+                    if service.process.stdout:
+                        stdout_output = service.process.stdout.read()
+                    if service.process.stderr:
+                        stderr_output = service.process.stderr.read()
+                    
+                    if stdout_output:
+                        self.append_log(f"进程退出，stdout: {stdout_output}", error=True, service_name=service.name)
+                    if stderr_output:
+                        self.append_log(f"进程退出，stderr: {stderr_output}", error=True, service_name=service.name)
+                except Exception as e:
+                    self.append_log(f"读取进程输出失败: {str(e)}", error=True, service_name=service.name)
                 
-                if stdout_output:
-                    self.append_log(f"进程退出，stdout: {stdout_output}", error=True, service_name=service.name)
-                if stderr_output:
-                    self.append_log(f"进程退出，stderr: {stderr_output}", error=True, service_name=service.name)
-            except Exception as e:
-                self.append_log(f"读取进程输出失败: {str(e)}", error=True, service_name=service.name)
+                # 设置日志线程终止标志
+                service.log_thread_terminate = True
+                
+                # 释放进程资源
+                service.process = None
+                service.running = False
+                service.status = "未运行"
+                service.local_addr = ""
             
-            service.process = None
-            error_msg = f"服务启动失败: 进程立即退出，退出码: {poll_result}"
-            if stdout_output or stderr_output:
-                error_msg += "\n\n详细输出:"
-                if stdout_output:
-                    error_msg += f"\n\n标准输出:\n{stdout_output}"
-                if stderr_output:
-                    error_msg += f"\n\n标准错误:\n{stderr_output}"
-            
-            self.append_log(error_msg, error=True, service_name=service.name)
-            QMessageBox.critical(self, "错误", error_msg)
-            return False
+                error_msg = f"服务启动失败: 进程立即退出，退出码: {poll_result}"
+                if stdout_output or stderr_output:
+                    error_msg += "\n\n详细输出:"
+                    if stdout_output:
+                        error_msg += f"\n\n标准输出:\n{stdout_output}"
+                    if stderr_output:
+                        error_msg += f"\n\n标准错误:\n{stderr_output}"
+                
+                self.append_log(error_msg, error=True, service_name=service.name)
+                QMessageBox.critical(self, "错误", error_msg)
+                return False
         
         # 服务启动成功，更新服务状态和UI
         self._update_service_after_start(service, index)
