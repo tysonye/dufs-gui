@@ -1,0 +1,315 @@
+最严重问题（需立即修复）
+1. 服务停止后UI状态未更新（高风险）
+python
+
+编辑
+
+
+
+# 在stop_service方法中
+with service.lock:
+    service.running = False
+    service.process = None
+    service.status = "未运行"
+    service.local_addr = ""
+
+# 未调用self.status_updated.emit()，导致UI状态不更新
+影响：用户界面显示服务仍为"运行中"，但实际已停止，导致严重误判
+修复：在状态更新后添加self.status_updated.emit()
+2. 服务路径为空时崩溃（高风险）
+python
+
+编辑
+
+
+
+# 在_build_command中
+command.append(service.serve_path)  # 未检查路径是否为空
+
+# 在_start_service_process中
+if not os.path.exists(service.serve_path):  # 未检查空路径
+影响：当服务路径为空时，程序崩溃
+修复：
+python
+
+编辑
+
+
+
+if not service.serve_path.strip():
+    QMessageBox.critical(self, "错误", "服务路径不能为空")
+    return False
+3. 端口输入非数字时崩溃（高风险）
+python
+
+编辑
+
+
+
+# 在_find_available_port中
+original_port = int(service.port.strip())  # 未处理非数字输入
+影响：当用户输入非数字端口（如"abc"）时，程序崩溃
+修复：
+python
+
+编辑
+
+
+
+try:
+    original_port = int(service.port.strip())
+    if original_port < 1 or original_port > 65535:
+        raise ValueError("端口必须在1-65535之间")
+except ValueError:
+    QMessageBox.critical(self, "错误", "端口必须是1-65535之间的整数")
+    return None
+4. 服务路径包含空格导致命令行解析错误（高风险）
+python
+
+编辑
+
+
+
+# 在_build_command中
+command.append(service.serve_path)  # 未处理空格
+影响：当服务路径包含空格（如"C:/My Folder"）时，Dufs无法正确解析路径
+修复：
+python
+
+编辑
+
+
+
+import shlex
+service_path = shlex.quote(service.serve_path)
+command.append(service_path)
+🟠 中等风险问题
+1. 服务路径权限检查不充分（中等风险）
+python
+
+编辑
+
+
+
+# 仅检查读取权限
+if not os.access(service.serve_path, os.R_OK):
+影响：Dufs可能需要写入权限（如创建日志文件）
+修复：
+python
+
+编辑
+
+
+
+if not os.access(service.serve_path, os.R_OK | os.W_OK):
+2. 日志线程未正确终止（中等风险）
+python
+
+编辑
+
+
+
+# 在stop_service中
+# 未确保日志读取线程已终止
+影响：服务停止后，日志线程可能仍在尝试读取已关闭的管道，导致内存泄漏
+修复：
+python
+
+编辑
+
+
+
+# 在stop_service中添加
+if hasattr(service, 'log_thread_terminate'):
+    service.log_thread_terminate = True
+3. 服务路径未规范化（中等风险）
+python
+
+编辑
+
+
+
+# 未处理相对路径、符号链接等
+影响：相对路径可能导致Dufs解析错误
+修复：
+python
+
+编辑
+
+
+
+service.serve_path = os.path.abspath(service.serve_path)
+4. 认证规则处理不安全（中等风险）
+python
+
+编辑
+
+
+
+# 在_build_command中
+if service.auth_rules:
+    for rule in service.auth_rules:
+        # 未检查service.auth_rules是否为列表
+影响：如果service.auth_rules为None，会引发错误
+修复：
+python
+
+编辑
+
+
+
+if service.auth_rules and isinstance(service.auth_rules, list) and len(service.auth_rules) > 0:
+🟢 低风险问题
+1. 服务路径检查不完整（低风险）
+python
+
+编辑
+
+
+
+# 未检查路径是否为目录
+if not os.path.exists(service.serve_path):
+影响：路径存在但不是目录时，Dufs会失败
+修复：
+python
+
+编辑
+
+
+
+if not os.path.isdir(service.serve_path):
+    QMessageBox.critical(self, "错误", "服务路径必须是目录")
+    return False
+2. 服务启动时的命令行参数未优化（低风险）
+python
+
+编辑
+
+
+
+# 未使用shlex.quote处理路径
+影响：路径包含特殊字符时可能解析错误
+修复：已包含在高风险问题中
+3. 端口范围未验证（低风险）
+python
+
+编辑
+
+
+
+# 未验证端口是否在1-65535范围内
+影响：用户可能输入无效端口
+修复：已包含在高风险问题中
+⚠️ 潜在风险
+1. 服务状态管理线程安全问题
+python
+
+编辑
+
+
+
+# 在monitor_service中
+with service.lock:
+    if not service.running or service.process is None:
+        break
+风险：在service.process被置为None后，poll_result = service.process.poll()可能引发AttributeError
+修复：
+python
+
+编辑
+
+
+
+with service.lock:
+    if not service.running or service.process is None:
+        break
+    poll_result = service.process.poll()
+2. 服务启动时的进程状态检查不完善
+python
+
+编辑
+
+
+
+# 在_delayed_check_service_started中
+poll_result = service.process.poll()
+风险：如果service.process在with service.lock中被置为None，这里会引发错误
+修复：确保在检查前服务进程仍然存在
+🔧 修复建议总结
+1. 优先修复（高风险问题）
+文件：dufs_multi_gui_pyqt.py
+修复1：服务路径空值检查
+python
+
+编辑
+
+
+
+# 在_start_service_process方法中
+if not service.serve_path.strip():
+    QMessageBox.critical(self, "错误", "服务路径不能为空")
+    return False
+修复2：端口输入验证
+python
+
+编辑
+
+
+
+# 在_find_available_port方法中
+try:
+    original_port = int(service.port.strip())
+    if original_port < 1 or original_port > 65535:
+        raise ValueError("端口必须在1-65535之间")
+except ValueError as e:
+    QMessageBox.critical(self, "错误", str(e))
+    return None
+修复3：服务停止后UI更新
+python
+
+编辑
+
+
+
+# 在stop_service方法末尾添加
+self.status_updated.emit()
+修复4：路径特殊字符处理
+python
+
+编辑
+
+
+
+# 在_build_command方法中
+import shlex
+service_path = shlex.quote(service.serve_path)
+command.append(service_path)
+2. 建议修复（中等风险问题）
+修复1：服务路径权限检查
+python
+
+编辑
+
+
+
+# 在_start_service_process方法中
+if not os.access(service.serve_path, os.R_OK | os.W_OK):
+修复2：日志线程终止
+python
+
+编辑
+
+
+
+# 在stop_service方法中
+if service.log_thread_terminate:
+    service.log_thread_terminate = True
+修复3：认证规则安全处理
+python
+
+编辑
+
+
+
+# 在_build_command方法中
+if service.auth_rules and isinstance(service.auth_rules, list) and len(service.auth_rules) > 0:
