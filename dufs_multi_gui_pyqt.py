@@ -4,6 +4,7 @@ import subprocess
 import threading
 import time
 import socket
+import psutil
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QLineEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
@@ -722,9 +723,27 @@ class DufsMultiGUI(QMainWindow):
     
     def init_system_tray(self):
         """初始化系统托盘"""
+        # 获取图标路径
+        def get_icon_path():
+            # 单文件打包时，PyInstaller会设置sys._MEIPASS指向临时目录
+            if hasattr(sys, '_MEIPASS'):
+                # 单文件打包模式，从临时目录加载
+                return os.path.join(sys._MEIPASS, "icon.ico")
+            else:
+                # 开发模式，从当前目录或程序目录加载
+                # 尝试从当前目录加载
+                icon_path = "icon.ico"
+                if os.path.exists(icon_path):
+                    return icon_path
+                # 尝试从程序所在目录加载
+                icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+                if os.path.exists(icon_path):
+                    return icon_path
+                return None
+        
         # 创建托盘图标
-        icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "ICON.ICO"))
-        if os.path.exists(icon_path):
+        icon_path = get_icon_path()
+        if icon_path and os.path.exists(icon_path):
             self.tray_icon = QSystemTrayIcon(QIcon(icon_path), self)
         else:
             # 如果没有图标文件，使用默认图标
@@ -905,14 +924,21 @@ class DufsMultiGUI(QMainWindow):
             # 保存服务当前状态（是否运行中）
             was_running = service.status == "运行中"
             
+            # 如果服务之前是运行中的，先停止旧服务
+            if was_running:
+                # 保存旧服务实例，用于停止旧进程
+                old_service = service
+                # 停止旧服务
+                self.stop_service(index)
+            
             # 更新服务
             self.services[index] = dialog.service
             self.status_updated.emit()
             
-            # 如果服务之前是运行中的，询问是否重新启动
+            # 如果服务之前是运行中的，启动新服务
             if was_running:
-                if QMessageBox.question(self, "提示", "服务已更新，是否重新启动服务？") == QMessageBox.Yes:
-                    self.start_service(index)
+                QMessageBox.information(self, "提示", "服务配置已更改，服务将自动重启以应用新配置。")
+                self.start_service(index)
     
     def start_service_from_button(self):
         """从主面板按钮启动服务（修复：获取选中的服务）"""
@@ -1116,8 +1142,8 @@ class DufsMultiGUI(QMainWindow):
                 
                 # 确保用户名和密码都不为空
                 if username and password:
-                    # 修复认证参数格式：使用/作为路径，而不是./
-                    auth_rule = f"{username}:{password}@/"
+                    # 修复认证参数格式：使用正确的权限格式，格式为 user:pass@/:rw
+                    auth_rule = f"{username}:{password}@/:rw"
                     command.extend(["--auth", auth_rule])
         
         # 添加服务根目录（dufs.exe [options] [path]）
@@ -1215,12 +1241,39 @@ class DufsMultiGUI(QMainWindow):
             QMessageBox.information(self, "提示", "该服务已停止")
             return
         
-        # 停止进程
-        service.process.terminate()
+        # 使用psutil更彻底地终止进程及其子进程
         try:
-            service.process.wait(timeout=3)
+            # 获取进程PID
+            pid = service.process.pid
+            # 获取进程对象
+            proc = psutil.Process(pid)
+            # 获取所有子进程
+            children = proc.children(recursive=True)
+            # 终止所有子进程
+            for child in children:
+                child.terminate()
+            # 等待子进程终止
+            psutil.wait_procs(children, timeout=2)
+            # 终止主进程
+            proc.terminate()
+            # 等待主进程终止
+            proc.wait(timeout=2)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            # 如果进程不存在或无法访问，直接继续
+            pass
         except subprocess.TimeoutExpired:
-            service.process.kill()
+            # 如果超时，强制终止
+            try:
+                proc.kill()
+            except:
+                pass
+        finally:
+            # 无论如何，都执行原始的终止和清理操作
+            service.process.terminate()
+            try:
+                service.process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                service.process.kill()
         
         # 更新服务状态
         service.process = None
@@ -1423,6 +1476,23 @@ class DufsMultiGUI(QMainWindow):
             if self.services[i].status == "运行中":
                 self.stop_service(i)
         
+        # 额外的进程清理：确保所有dufs进程都被终止
+        try:
+            # 查找所有名称为dufs.exe的进程并终止
+            for proc in psutil.process_iter(['name', 'pid']):
+                if proc.info['name'] == 'dufs.exe':
+                    try:
+                        proc.terminate()
+                    except:
+                        try:
+                            proc.kill()
+                        except:
+                            pass
+            # 等待所有进程终止
+            time.sleep(1)
+        except:
+            pass
+        
         # 隐藏托盘图标
         if hasattr(self, 'tray_icon'):
             self.tray_icon.hide()
@@ -1430,14 +1500,46 @@ class DufsMultiGUI(QMainWindow):
         # 关闭主窗口并退出应用程序
         self.close()
         QApplication.quit()
+        # 强制退出Python解释器，确保所有线程都被终止
+        sys.exit(0)
 
 if __name__ == "__main__":
+    # 解决PyInstaller临时目录删除失败的警告
+    # 方法：使用ctypes捕获Windows错误消息，防止警告弹窗
+    if hasattr(sys, '_MEIPASS') and sys.platform == 'win32':
+        try:
+            import ctypes
+            # 设置Windows错误模式，忽略删除目录失败的错误
+            SEM_NOGPFAULTERRORBOX = 0x0002
+            SEM_NOOPENFILEERRORBOX = 0x8000
+            ctypes.windll.kernel32.SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX)
+        except Exception:
+            pass
+    
     app = QApplication(sys.argv)
     app.setStyle("Fusion")  # 跨平台统一样式
     
     # 设置应用程序图标
-    icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "ICON.ICO"))
-    if os.path.exists(icon_path):
+    # 获取图标路径
+    def get_icon_path():
+        # 单文件打包时，PyInstaller会设置sys._MEIPASS指向临时目录
+        if hasattr(sys, '_MEIPASS'):
+            # 单文件打包模式，从临时目录加载
+            return os.path.join(sys._MEIPASS, "icon.ico")
+        else:
+            # 开发模式，从当前目录或程序目录加载
+            # 尝试从当前目录加载
+            icon_path = "icon.ico"
+            if os.path.exists(icon_path):
+                return icon_path
+            # 尝试从程序所在目录加载
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+            if os.path.exists(icon_path):
+                return icon_path
+            return None
+    
+    icon_path = get_icon_path()
+    if icon_path and os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
     
     window = DufsMultiGUI()
