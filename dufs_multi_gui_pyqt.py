@@ -64,7 +64,12 @@ QWidget {
     font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
     font-size: 12px;
     color: #333333;
-    background-color: #FFFFFF;
+    background-color: #f5f5f5;
+}
+
+QMainWindow {
+    background-color: #f5f5f5;
+    color: #333333;
 }
 
 /* 分组框样式 */
@@ -87,24 +92,24 @@ QGroupBox::title {
 
 /* 按钮样式 */
 QPushButton {
-    background-color: #3498DB;
+    background-color: #4a6fa5;
     color: white;
     border: none;
-    border-radius: 4px;
-    padding: 6px 16px;
+    border-radius: 3px;
+    padding: 5px 10px;
     font-size: 12px;
 }
 
 QPushButton:hover {
-    background-color: #2980B9;
+    background-color: #3a5a8a;
 }
 
 QPushButton:pressed {
-    background-color: #1F618D;
+    background-color: #2a4a7a;
 }
 
 QPushButton:disabled {
-    background-color: #BDC3C7;
+    background-color: #cccccc;
 }
 
 /* 浏览按钮特殊样式 */
@@ -184,19 +189,19 @@ QTabWidget::pane {
 }
 
 QTabBar::tab {
-    padding: 8px 16px;
-    margin-right: 2px;
-    border-radius: 6px 6px 0 0;
-    background-color: #ECF0F1;
+    background-color: #e0e0e0;
+    padding: 5px 15px;
+    border: 1px solid #ccc;
+    border-bottom: none;
 }
 
 QTabBar::tab:selected {
-    background-color: #3498DB;
+    background-color: #4a6fa5;
     color: white;
 }
 
 QTabBar::tab:!selected:hover {
-    background-color: #D5DBDB;
+    background-color: #d0d0d0;
 }
 
 /* 树形控件样式 - 核心修改 */
@@ -686,10 +691,17 @@ class DufsMultiGUI(QMainWindow):
         timestamp = time.strftime("%H:%M:%S")
         service_tag = f"[{service_name}] " if service_name else ""
         
+        # 根据错误级别设置日志级别和颜色
+        if error:
+            level = "错误"
+        else:
+            level = "信息"
+        
         # 将专业日志格式转换为易懂文字
         readable_message = self._make_log_readable(message)
         
-        log_message = f"[{timestamp}] {service_tag}{readable_message}"
+        # 构建日志消息，包含时间戳和级别
+        log_message = f"[{timestamp}] [{level}] {service_tag}{readable_message}"
         
         # 使用信号槽机制更新UI
         self.log_signal.emit(log_message, error, service_name, service)
@@ -753,8 +765,15 @@ class DufsMultiGUI(QMainWindow):
     def _append_log_ui(self, message, error=False, service_name="", service=None):
         """在UI线程中添加日志条目"""
         if service and service.log_widget:
-            # 使用HTML格式添加带颜色的日志
-            color = "#ff6b6b" if error else "#c0c0c0"
+            # 根据错误级别设置不同的颜色
+            if error:
+                color = "#f44336"  # 红色
+                level = "错误"
+            else:
+                color = "#2196f3"  # 蓝色
+                level = "信息"
+            
+            # 使用HTML格式添加带颜色的日志，包含时间戳和级别
             service.log_widget.appendHtml(f"<span style='color:{color}'>{message}</span>")
         else:
             # 如果没有指定服务或服务没有日志控件，暂时不处理
@@ -1688,14 +1707,24 @@ Categories=Utility;
             perms_text = ", ".join(perms_info) if perms_info else ""
             
             # 创建树项（移除复选框列）
+            status = service.status
+            
             item = QTreeWidgetItem([
                 service.name,
                 service.port,
-                service.status,
+                status,
                 auth_info,
                 perms_text,
                 service.serve_path
             ])
+            
+            # 根据服务状态设置状态列的颜色
+            if status == "运行中":
+                item.setForeground(2, QColor("#4caf50"))  # 绿色
+            elif status == "未运行":
+                item.setForeground(2, QColor("#f44336"))  # 红色
+            elif status == "启动中":
+                item.setForeground(2, QColor("#ff9800"))  # 橙色
             
             # 设置所有列的内容居中显示
             for col in range(self.service_tree.columnCount()):
