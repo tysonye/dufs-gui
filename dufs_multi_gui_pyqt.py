@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QLineEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
     QTabWidget, QFrame, QGroupBox, QGridLayout, QMenu, QAction,
-    QMessageBox, QFileDialog, QDialog, QComboBox, QCheckBox, QSystemTrayIcon, QStyle, QToolTip, QStatusBar, QHeaderView
+    QMessageBox, QFileDialog, QDialog, QComboBox, QCheckBox, QSystemTrayIcon, QStyle, QToolTip, QStatusBar, QHeaderView, QTextEdit
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QColor, QIcon, QFontMetrics, QCursor
@@ -552,12 +552,14 @@ class DufsServiceDialog(QDialog):
 class DufsMultiGUI(QMainWindow):
     """Dufs多服务GUI主程序"""
     status_updated = pyqtSignal()
+    log_signal = pyqtSignal(str, bool, str)  # 日志内容, 是否错误, 服务名称
     
     def __init__(self):
         super().__init__()
         self.services = []
         self.init_ui()
         self.status_updated.connect(self.update_service_list)
+        self.log_signal.connect(self._append_log_ui)
     
     def init_ui(self):
         """初始化主窗口UI"""
@@ -688,6 +690,20 @@ class DufsMultiGUI(QMainWindow):
         
         addr_group.setLayout(addr_layout)
         main_layout.addWidget(addr_group)
+        
+        # 日志窗口
+        log_group = QGroupBox("服务日志")
+        log_layout = QVBoxLayout()
+        log_layout.setContentsMargins(15, 15, 15, 15)
+        
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setStyleSheet("font-family: 'Consolas', 'Monaco', monospace; font-size: 12px;")
+        self.log_view.setLineWrapMode(QTextEdit.NoWrap)
+        log_layout.addWidget(self.log_view)
+        
+        log_group.setLayout(log_layout)
+        main_layout.addWidget(log_group)
         
         # 状态栏
         self.status_bar = QStatusBar()
@@ -1103,7 +1119,13 @@ class DufsMultiGUI(QMainWindow):
         
         # 构建命令
         # 使用dufs.exe的完整路径
-        dufs_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "dufs.exe"))
+        # 处理单文件打包情况
+        if hasattr(sys, '_MEIPASS'):
+            # 单文件打包模式，dufs.exe会被解压到sys._MEIPASS目录
+            dufs_path = os.path.join(sys._MEIPASS, "dufs.exe")
+        else:
+            # 开发模式，dufs.exe在当前目录
+            dufs_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "dufs.exe"))
         command = [dufs_path]
         
         # 基本参数，去除多余空白字符
@@ -1151,54 +1173,86 @@ class DufsMultiGUI(QMainWindow):
         
         # 启动服务
         try:
+            # 记录完整的命令信息
+            self.append_log(f"构建的命令: {' '.join(command)}", service_name=service.name)
+            
             # 检查 dufs.exe 是否存在
+            self.append_log(f"检查 dufs.exe 路径: {dufs_path}", service_name=service.name)
             if not os.path.exists(dufs_path):
+                self.append_log(f"启动服务失败: dufs.exe 不存在 - 路径: {dufs_path}", error=True, service_name=service.name)
                 QMessageBox.critical(self, "错误", f"启动服务失败: dufs.exe 不存在\n路径: {dufs_path}")
                 return
             
             # 检查服务路径是否存在
+            self.append_log(f"检查服务路径: {service.serve_path}", service_name=service.name)
             if not os.path.exists(service.serve_path):
+                self.append_log(f"启动服务失败: 服务路径不存在 - 路径: {service.serve_path}", error=True, service_name=service.name)
                 QMessageBox.critical(self, "错误", f"启动服务失败: 服务路径不存在\n路径: {service.serve_path}")
                 return
             
-            # 启动进程
+            # 记录服务启动信息
+            self.append_log(f"启动 DUFS...", service_name=service.name)
+            
+            # 启动进程 - 使用正确的参数
             service.process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                universal_newlines=True,
                 creationflags=subprocess.CREATE_NO_WINDOW  # 隐藏命令窗口
             )
             
+            self.append_log(f"进程已启动，PID: {service.process.pid}", service_name=service.name)
+            
+            # 启动日志读取线程
+            self.append_log(f"启动日志读取线程", service_name=service.name)
+            self.stream_log(service.process, service)
+            
             # 等待一小段时间，检查进程是否还在运行（端口冲突会导致进程立即退出）
+            self.append_log(f"等待1秒，检查进程状态", service_name=service.name)
             time.sleep(1)
             
             # 检查进程是否还在运行
-            if service.process.poll() is not None:
+            poll_result = service.process.poll()
+            self.append_log(f"进程状态检查结果: {poll_result}", service_name=service.name)
+            if poll_result is not None:
                 # 进程已退出，说明启动失败
-                stdout, stderr = service.process.communicate()
-                error_msg = f"启动服务失败: 进程立即退出\n标准输出: {stdout}\n标准错误: {stderr}"
-                error_msg += f"\n执行命令: {' '.join(command)}"
-                error_msg += f"\n服务工作目录: {service.serve_path}"
-                QMessageBox.critical(self, "错误", error_msg)
+                # 尝试读取stderr获取详细错误信息
+                stderr_output = ""
+                try:
+                    stderr_output = service.process.stderr.read()
+                    self.append_log(f"进程退出，stderr: {stderr_output}", error=True, service_name=service.name)
+                except:
+                    pass
                 service.process = None
+                error_msg = f"服务启动失败: 进程立即退出"
+                if stderr_output:
+                    error_msg += f"\n错误信息: {stderr_output}"
+                self.append_log(error_msg, error=True, service_name=service.name)
+                QMessageBox.critical(self, "错误", error_msg)
                 return
             
             # 更新服务状态
+            self.append_log(f"进程正常运行，更新服务状态", service_name=service.name)
             service.status = "运行中"
             
             # 启动监控线程
+            self.append_log(f"启动监控线程", service_name=service.name)
             threading.Thread(target=self.monitor_service, args=(service, index), daemon=True).start()
             
             # 更新服务列表
+            self.append_log(f"更新服务列表", service_name=service.name)
             self.status_updated.emit()
             
             # 更新地址
+            self.append_log(f"更新服务地址", service_name=service.name)
             self.refresh_address(index)
             
             # 更新状态栏
+            self.append_log(f"服务启动成功", service_name=service.name)
             self.status_bar.showMessage(f"已启动服务: {service.name} | 访问地址: {service.local_addr}")
         except Exception as e:
+            # 记录错误信息
+            self.append_log(f"启动服务失败: {str(e)}", error=True, service_name=service.name)
             # 显示错误信息
             error_msg = f"启动服务失败: {str(e)}"
             error_msg += f"\n执行命令: {' '.join(command)}"
@@ -1280,6 +1334,9 @@ class DufsMultiGUI(QMainWindow):
         service.status = "未运行"
         service.local_addr = ""
         
+        # 记录服务停止信息
+        self.append_log(f"已停止服务", service_name=service.name)
+        
         # 更新服务列表
         self.status_updated.emit()
         
@@ -1336,6 +1393,63 @@ class DufsMultiGUI(QMainWindow):
             return ip
         except:
             return "127.0.0.1"
+    
+    def _append_log_ui(self, text, error, service_name):
+        """UI线程中追加日志到日志窗口"""
+        # 获取当前时间
+        current_time = time.strftime("[%H:%M:%S]")
+        # 格式化日志行
+        service_tag = f"[{service_name}] " if service_name else ""
+        log_line = f"{current_time} {service_tag}{text.rstrip()}\n"
+        
+        # 根据日志类型设置颜色
+        color = "red" if error else "gray"
+        # 使用HTML格式化日志行
+        formatted_log = f"<span style='color:{color}'>{log_line}</span>"
+        
+        # 在主线程中更新UI
+        if self.log_view.isVisible():
+            # 使用QTextEdit的方法追加HTML内容
+            cursor = self.log_view.textCursor()
+            cursor.movePosition(cursor.End)
+            cursor.insertHtml(formatted_log)
+            # 自动滚动到底部
+            self.log_view.verticalScrollBar().setValue(self.log_view.verticalScrollBar().maximum())
+    
+    def append_log(self, text, error=False, service_name=""):
+        """发送日志信号到UI线程"""
+        self.log_signal.emit(text, error, service_name)
+    
+    def stream_log(self, process, service):
+        """启动日志读取线程，实时读取服务输出"""
+        def reader(pipe, is_err=False):
+            """读取管道输出的线程函数"""
+            try:
+                while process.poll() is None:
+                    # 读取原始字节
+                    line_bytes = pipe.readline()
+                    if not line_bytes:
+                        break
+                    # 尝试用UTF-8解码，失败则使用ignore模式处理
+                    try:
+                        line = line_bytes.decode('utf-8')
+                    except UnicodeDecodeError:
+                        # 忽略无法解码的字符
+                        line = line_bytes.decode('utf-8', errors='ignore')
+                    self.append_log(line, error=is_err, service_name=service.name)
+            finally:
+                pipe.close()
+        
+        # 修改subprocess.Popen参数，不使用text=True，而是手动处理编码
+        # 重新配置process的stdout和stderr为字节模式
+        if process.stdout and hasattr(process.stdout, 'mode') and 't' in process.stdout.mode:
+            # 如果已经是文本模式，重新启动进程
+            return
+        
+        # 创建并启动stdout读取线程
+        threading.Thread(target=reader, args=(process.stdout, False), daemon=True).start()
+        # 创建并启动stderr读取线程
+        threading.Thread(target=reader, args=(process.stderr, True), daemon=True).start()
     
     def browser_access(self):
         """用浏览器访问服务"""
