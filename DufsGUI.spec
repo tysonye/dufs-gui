@@ -4,8 +4,8 @@
 a = Analysis(
     ['dufs_multi_gui_pyqt.py'],
     pathex=[],
-    binaries=[('dufs.exe', '.'), ('icon.ico', '.')],
-    datas=[],
+    binaries=[],
+    datas=[('dufs.exe', '.'), ('icon.ico', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

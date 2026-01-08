@@ -112,30 +112,30 @@ QPushButton:disabled {
     background-color: #cccccc;
 }
 
-/* 浏览按钮特殊样式 */
+/* 浏览按钮特殊样式 - 统一为普通按钮样式 */
 QPushButton#PathBrowseBtn {
-    background-color: #2ECC71;
+    background-color: #4a6fa5;
 }
 
 QPushButton#PathBrowseBtn:hover {
-    background-color: #27AE60;
+    background-color: #3a5a8a;
 }
 
-/* 确定/取消按钮样式区分 */
+/* 确定/取消按钮样式 - 统一为普通按钮样式 */
 QPushButton#OkBtn {
-    background-color: #27AE60;
+    background-color: #4a6fa5;
 }
 
 QPushButton#OkBtn:hover {
-    background-color: #219653;
+    background-color: #3a5a8a;
 }
 
 QPushButton#CancelBtn {
-    background-color: #E74C3C;
+    background-color: #4a6fa5;
 }
 
 QPushButton#CancelBtn:hover {
-    background-color: #C0392B;
+    background-color: #3a5a8a;
 }
 
 /* 输入框样式 */
@@ -701,15 +701,18 @@ class DufsServiceDialog(QDialog):
         username = self.username_edit.text().strip()
         password = self.password_edit.text().strip()
         if username and password:
-            # 用户名限制：长度在3-20个字符之间，包含至少一个字母
+            # 用户名限制：长度在3-20个字符之间，包含至少一个字母，不得包含中文
             if len(username) < 3 or len(username) > 20:
                 QMessageBox.critical(self, "错误", "用户名长度必须在3-20个字符之间")
                 return
             if not any(c.isalpha() for c in username):
                 QMessageBox.critical(self, "错误", "用户名必须包含至少一个字母")
                 return
+            if any('\u4e00' <= c <= '\u9fff' for c in username):
+                QMessageBox.critical(self, "错误", "用户名不得包含中文")
+                return
             
-            # 密码限制：长度在6-30个字符之间，包含至少一个字母和一个数字
+            # 密码限制：长度在6-30个字符之间，包含至少一个字母和一个数字，不得包含中文
             if len(password) < 6 or len(password) > 30:
                 QMessageBox.critical(self, "错误", "密码长度必须在6-30个字符之间")
                 return
@@ -718,6 +721,9 @@ class DufsServiceDialog(QDialog):
                 return
             if not any(c.isdigit() for c in password):
                 QMessageBox.critical(self, "错误", "密码必须包含至少一个数字")
+                return
+            if any('\u4e00' <= c <= '\u9fff' for c in password):
+                QMessageBox.critical(self, "错误", "密码不得包含中文")
                 return
             
             service.auth_rules.append({
@@ -1398,18 +1404,25 @@ Categories=Utility;
     
     def init_system_tray(self):
         """初始化系统托盘"""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            QMessageBox.warning(self, "托盘功能不可用", "无法在系统托盘中显示图标。")
+            return
+            
         # 获取图标路径
         icon_path = get_resource_path("icon.ico")
         
         # 创建托盘图标
-        if icon_path and os.path.exists(icon_path):
-            self.tray_icon = QSystemTrayIcon(QIcon(icon_path), self)
-        else:
-            # 如果没有图标文件，使用默认图标
-            self.tray_icon = QSystemTrayIcon(self.style().standardIcon(QStyle.SP_ComputerIcon), self)
+        self.tray_icon = QSystemTrayIcon(self)
         
-        # 设置托盘图标提示
-        self.tray_icon.setToolTip("Dufs多服务管理")
+        # 设置默认图标
+        if icon_path and os.path.exists(icon_path):
+            self.default_icon = QIcon(icon_path)
+        else:
+            self.default_icon = self.style().standardIcon(QStyle.SP_ComputerIcon)
+        
+        # 初始设置图标和工具提示
+        self.update_tray_icon()
+        self.update_tray_tooltip()
         
         # 创建托盘菜单
         self.tray_menu = QMenu(self)
@@ -1425,6 +1438,43 @@ Categories=Utility;
         
         # 显示托盘图标
         self.tray_icon.show()
+        
+        # 更新服务状态时刷新托盘
+        self.status_updated.connect(self.update_tray_ui)
+    
+    def update_tray_ui(self):
+        """更新托盘UI，包括图标和工具提示"""
+        self.update_tray_icon()
+        self.update_tray_tooltip()
+        self.refresh_tray_menu()
+    
+    def update_tray_icon(self):
+        """根据服务状态更新托盘图标"""
+        running_count = sum(1 for service in self.services if service.running)
+        
+        if running_count == 0:
+            # 没有服务运行，使用默认图标
+            self.tray_icon.setIcon(self.default_icon)
+        elif running_count == 1:
+            # 一个服务运行，使用默认图标
+            self.tray_icon.setIcon(self.default_icon)
+        else:
+            # 多个服务运行，使用默认图标
+            self.tray_icon.setIcon(self.default_icon)
+    
+    def update_tray_tooltip(self):
+        """更新托盘提示，显示详细服务状态"""
+        tooltip = "Dufs多服务管理\n\n正在运行的服务:\n"
+        running_services = [s for s in self.services if s.running]
+        
+        if running_services:
+            for service in running_services:
+                tooltip += f"• {service.name}: {service.local_addr}\n"
+        else:
+            tooltip += "• 无正在运行的服务"
+        
+        tooltip += f"\n总共: {len(self.services)} 个服务"
+        self.tray_icon.setToolTip(tooltip)
     
     def show_window(self):
         """显示主窗口"""
@@ -1432,38 +1482,94 @@ Categories=Utility;
         self.raise_()
         self.activateWindow()
     
+    def open_url(self, url):
+        """打开指定的URL
+        
+        Args:
+            url (str): 要打开的URL地址
+        """
+        if url:
+            import webbrowser
+            webbrowser.open(url)
+    
+    def start_all_services(self):
+        """启动所有服务"""
+        for i in range(len(self.services)):
+            service = self.services[i]
+            if service.status != "运行中":
+                self.start_service_by_index(i)
+    
+    def stop_all_services(self):
+        """停止所有服务"""
+        for i in range(len(self.services)):
+            service = self.services[i]
+            if service.status == "运行中":
+                self.stop_service_by_index(i)
+    
     def refresh_tray_menu(self):
         """刷新托盘菜单，根据当前services列表重建"""
         # 清空现有菜单
         self.tray_menu.clear()
         
-        # 获取所有运行中的服务
-        running_services = [service for service in self.services if service.status == "运行中"]
-        
-        if not running_services:
-            # 没有运行中的服务
-            empty_action = QAction("暂无运行中的服务", self)
-            empty_action.setEnabled(False)
-            self.tray_menu.addAction(empty_action)
-        else:
-            # 添加服务列表
-            for service in running_services:
-                title = f"{service.port} | {service.serve_path}"
-                
-                # 添加服务信息（作为分隔线或标题）
-                info_action = QAction(f"🟢 {title}", self)
-                info_action.setEnabled(False)
-                self.tray_menu.addAction(info_action)
-                
-                # 添加停止服务菜单项
-                stop_action = QAction(f"⏹ 停止 {title}", self)
-                stop_action.triggered.connect(
-                    lambda checked=False, s=service: self.stop_service(s)
-                )
-                self.tray_menu.addAction(stop_action)
-        
-        # 添加分隔线
+        # 1. 服务状态摘要
+        running_count = sum(1 for service in self.services if service.status == "运行中")
+        status_action = QAction(f"🖥️ 正在运行: {running_count}/{len(self.services)} 个服务", self)
+        status_action.setEnabled(False)
+        self.tray_menu.addAction(status_action)
         self.tray_menu.addSeparator()
+        
+        # 2. 快速访问正在运行的服务
+        running_services = [service for service in self.services if service.status == "运行中"]
+        if running_services:
+            quick_access_menu = self.tray_menu.addMenu("🚀 快速访问")
+            for service in running_services[:5]:  # 限制显示数量
+                # 显示服务名称和访问地址
+                access_action = quick_access_menu.addAction(f"🌐 {service.name}")
+                access_action.triggered.connect(
+                    lambda checked=False, url=service.local_addr: self.open_url(url)
+                )
+            self.tray_menu.addSeparator()
+        
+        # 3. 服务控制
+        if self.services:
+            # 遍历所有服务，而不仅仅是运行中的服务
+            for i, service in enumerate(self.services):
+                # 格式化服务标题
+                title = f"{service.name} ({service.port})"
+                
+                # 根据服务状态显示不同的图标
+                if service.status == "运行中":
+                    status_icon = "🟢"
+                elif service.status == "启动中":
+                    status_icon = "🟡"
+                else:
+                    status_icon = "🔴"
+                
+                # 根据服务状态添加启动/停止菜单项
+                # 直接将服务名称和状态合并到动作中
+                if service.status == "运行中":
+                    # 服务正在运行，显示停止选项
+                    stop_action = QAction(f"⏹ {status_icon} {title} - 停止服务", self)
+                    stop_action.triggered.connect(
+                        lambda checked=False, idx=i: self.stop_service(idx)
+                    )
+                    self.tray_menu.addAction(stop_action)
+                else:
+                    # 服务未运行，显示启动选项
+                    start_action = QAction(f"▶ {status_icon} {title} - 启动服务", self)
+                    start_action.triggered.connect(
+                        lambda checked=False, idx=i: self.start_service(idx)
+                    )
+                    self.tray_menu.addAction(start_action)
+                
+                # 每个服务之间添加分隔线
+                self.tray_menu.addSeparator()
+        else:
+            # 没有服务
+            no_service_action = QAction("暂无配置的服务", self)
+            no_service_action.setEnabled(False)
+            self.tray_menu.addAction(no_service_action)
+            self.tray_menu.addSeparator()
         
         # 显示主界面
         show_action = QAction("🖥 显示主界面", self)
@@ -1615,11 +1721,11 @@ Categories=Utility;
                     if process.poll() is not None:
                         break
                     try:
-                        # 读取一行stdout
-                        line = process.stdout.readline()
-                        if line:
-                            # 转换为字符串并去除换行符
-                            line = line.strip()
+                        # 读取一行stdout字节流
+                        line_bytes = process.stdout.readline()
+                        if line_bytes:
+                            # 使用UTF-8解码为字符串并去除换行符
+                            line = line_bytes.decode('utf-8').strip()
                             if line:
                                 self.append_log(line, service_name=service.name, service=service)
                     except Exception as e:
@@ -1635,11 +1741,11 @@ Categories=Utility;
                     if process.poll() is not None:
                         break
                     try:
-                        # 读取一行stderr
-                        line = process.stderr.readline()
-                        if line:
-                            # 转换为字符串并去除换行符
-                            line = line.strip()
+                        # 读取一行stderr字节流
+                        line_bytes = process.stderr.readline()
+                        if line_bytes:
+                            # 使用UTF-8解码为字符串并去除换行符
+                            line = line_bytes.decode('utf-8').strip()
                             if line:
                                 self.append_log(line, error=True, service_name=service.name, service=service)
                     except Exception as e:
@@ -1698,8 +1804,14 @@ Categories=Utility;
         """在浏览器中访问服务"""
         address = self.addr_edit.text()
         if address:
-            import webbrowser
-            webbrowser.open(address)
+            try:
+                import webbrowser
+                webbrowser.open(address)
+            except Exception as e:
+                self.append_log(f"浏览器访问失败: {str(e)}", error=True)
+                QMessageBox.warning(self, "警告", f"浏览器访问失败: {str(e)}")
+        else:
+            QMessageBox.warning(self, "警告", "请先选择一个服务")
     
     def on_service_selected(self):
         """处理服务列表选择事件"""
@@ -1812,6 +1924,8 @@ Categories=Utility;
         if dialog.exec_():
             self.services.append(dialog.service)
             self.status_updated.emit()
+            # 刷新托盘菜单，显示新增的服务
+            self.refresh_tray_menu()
             self.status_bar.showMessage(f"已添加服务: {dialog.service.name}")
             self.save_config()
     
@@ -1847,6 +1961,9 @@ Categories=Utility;
             # 更新服务
             self.services[index] = dialog.service
             self.status_updated.emit()
+            
+            # 刷新托盘菜单，更新服务信息
+            self.refresh_tray_menu()
             
             # 如果服务之前是运行中的，启动新服务
             if was_running:
@@ -1927,6 +2044,9 @@ Categories=Utility;
         
         # 更新服务列表
         self.status_updated.emit()
+        
+        # 刷新托盘菜单，更新服务列表
+        self.refresh_tray_menu()
         
         # 更新状态栏
         self.status_bar.showMessage(f"已删除服务: {service.name}")
@@ -2156,12 +2276,14 @@ Categories=Utility;
         # 移除--log-format参数，使用Dufs的默认日志格式
         # 默认日志格式已经包含了我们需要的所有信息：客户端IP地址、请求方法和路径、HTTP状态码
         # 通过源码分析，默认格式为：$remote_addr "$request" $status
-        
+        # 添加--log-format参数明确启用HTTP访问日志
+        command.extend(["--log-format", "$remote_addr \"$request\" $status"]) 
+    
         # 添加服务根目录（dufs.exe [options] [path]）
         # 在Windows系统上直接使用路径，不使用shlex.quote，因为它会产生单引号包裹的路径
         # 确保路径中的反斜杠被正确处理
         command.append(service_serve_path)
-        
+    
         return command
     
     def _start_service_process(self, service, command):
@@ -2246,9 +2368,9 @@ Categories=Utility;
                 env=os.environ.copy(),  # 复制当前环境变量
                 stdout=subprocess.PIPE,  # 捕获标准输出
                 stderr=subprocess.PIPE,  # 捕获标准错误
-                text=True,  # 使用文本模式而不是字节模式
+                text=False,  # 使用字节模式，手动处理UTF-8编码
                 bufsize=1,  # 行缓冲，确保实时获取日志
-                universal_newlines=True,  # 确保正确处理换行符
+                universal_newlines=False,  # 不自动处理换行符
                 creationflags=creation_flags  # 隐藏命令窗口
             )
             
@@ -2257,6 +2379,9 @@ Categories=Utility;
             self.append_log(f"启动进程失败: {str(e)}", error=True, service_name=service.name)
             QMessageBox.critical(self, "错误", f"启动进程失败: {str(e)}")
             return False
+        
+        # 为服务创建专属日志Tab（提前创建，确保日志不丢失）
+        self.create_service_log_tab(service)
         
         # 启动日志读取线程
         self.append_log(f"启动日志读取线程", service_name=service.name)
@@ -2334,9 +2459,6 @@ Categories=Utility;
     
     def _update_service_after_start(self, service, index):
         """服务启动后更新状态和UI"""
-        # 为服务创建专属日志Tab
-        self.create_service_log_tab(service)
-        
         # 更新服务状态
         self.append_log(f"进程正常运行，更新服务状态", service_name=service.name, service=service)
         service.status = "运行中"
@@ -2349,6 +2471,9 @@ Categories=Utility;
         # 更新服务列表
         self.append_log(f"更新服务列表", service_name=service.name, service=service)
         self.status_updated.emit()
+        
+        # 刷新托盘菜单
+        self.refresh_tray_menu()
         
         # 更新地址
         self.append_log(f"更新服务地址", service_name=service.name, service=service)
@@ -2458,6 +2583,9 @@ Categories=Utility;
         
         # 更新服务列表
         self.status_updated.emit()
+        
+        # 刷新托盘菜单
+        self.refresh_tray_menu()
         
         # 清空地址显示
         self.addr_edit.setText("")
@@ -2913,9 +3041,6 @@ if __name__ == "__main__":
     
     def _update_service_after_start(self, service, index):
         """服务启动后更新状态和UI"""
-        # 为服务创建专属日志Tab
-        self.create_service_log_tab(service)
-        
         # 更新服务状态
         self.append_log(f"进程正常运行，更新服务状态", service_name=service.name, service=service)
         service.status = "运行中"
