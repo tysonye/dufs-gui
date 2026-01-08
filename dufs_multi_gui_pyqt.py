@@ -34,7 +34,7 @@ CONFIG_FILE = os.path.join(config_dir, 'dufs_config.json')
 
 # 窗口尺寸常量
 MIN_WINDOW_WIDTH = 900
-MIN_WINDOW_HEIGHT = 600
+MIN_WINDOW_HEIGHT = 800
 DIALOG_WIDTH = 750
 DIALOG_HEIGHT = 550
 
@@ -2065,9 +2065,9 @@ Categories=Utility;
             # 获取服务对象
             service = self.services[index]
             
-            # 检查服务是否已经在运行，如果是则直接返回
-            if service.status == "运行中":
-                self.append_log(f"服务 {service.name} 已经在运行中，无需重复启动", service_name=service.name, service=service)
+            # 检查服务是否已经在运行或启动中，如果是则直接返回
+            if service.status in ["运行中", "启动中"]:
+                self.append_log(f"服务 {service.name} 已经在{service.status}，无需重复启动", service_name=service.name, service=service)
                 return
             
             # 查找可用端口
@@ -2080,8 +2080,15 @@ Categories=Utility;
             if command is None:
                 return
             
+            # 设置服务状态为启动中，防止重复启动
+            service.status = "启动中"
+            self.status_updated.emit()
+            
             # 启动服务进程
             if not self._start_service_process(service, command):
+                # 启动失败，重置状态为未运行
+                service.status = "未运行"
+                self.status_updated.emit()
                 return
             
             # 启动服务启动检查定时器
