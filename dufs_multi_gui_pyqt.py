@@ -1124,9 +1124,10 @@ class DufsMultiGUI(QMainWindow):
             if os.name == 'nt':  # Windows
                 import winreg
                 # 获取当前可执行文件路径
-                exe_path = sys.executable
-                # 如果是单文件打包的程序，直接使用sys.executable
                 if getattr(sys, 'frozen', False):
+                    # 对于单文件打包程序，sys.argv[0]指向实际的可执行文件路径
+                    exe_path = os.path.abspath(sys.argv[0])
+                else:
                     exe_path = sys.executable
                 
                 key_path = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
@@ -2768,7 +2769,7 @@ Categories=Utility;
                 stdout=subprocess.PIPE,  # 捕获标准输出
                 stderr=subprocess.PIPE,  # 捕获标准错误
                 text=False,  # 使用字节模式，手动处理UTF-8编码
-                bufsize=0,  # 无缓冲，确保实时获取日志
+                bufsize=0,  # 无缓冲，在二进制模式下可靠工作
                 universal_newlines=False,  # 不自动处理换行符
                 creationflags=creation_flags  # 隐藏命令窗口
             )

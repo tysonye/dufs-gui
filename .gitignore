@@ -1,0 +1,56 @@
+# 忽略Nuitka打包生成的文件和目录
+dufs_multi_gui_pyqt.exe
+dufs_multi_gui_pyqt.build/
+dufs_multi_gui_pyqt.dist/
+dufs_multi_gui_pyqt.onefile-build/
+
+# 忽略Python安装程序
+python-*.exe
+
+# 忽略崩溃报告
+nuitka-crash-report.xml
+
+# 忽略临时文件和目录
+*.tmp
+*.temp
+*.log
+
+# 忽略文档文件
+*.md
+
+# 忽略配置文件
+dufs_config.json
+
+# 忽略图标文件
+*.ico
+
+# 忽略二进制文件
+dufs.exe
+
+# 忽略虚拟环境
+.venv/
+venv/
+
+# 忽略IDE相关文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 忽略系统文件
+Thumbs.db
+.DS_Store
+
+# 忽略缓存文件
+__pycache__/
+*.pyc
+*.pyo
+
+# 忽略编译生成的文件
+*.so
+*.pyd
+*.dll
+*.lib
+*.obj
+*.o
