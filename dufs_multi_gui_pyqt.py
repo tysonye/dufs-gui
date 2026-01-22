@@ -1118,22 +1118,77 @@ class DufsMultiGUI(QMainWindow):
             self.append_log(f"检查自启动状态失败: {str(e)}", error=True, service_name="系统")
             return False
 
+    def get_correct_exe_path(self):
+        """获取正确的可执行文件路径，避免使用临时目录"""
+        import os
+        if getattr(sys, 'frozen', False):
+            # 对于单文件打包程序，使用更可靠的方法获取原始可执行文件路径
+            
+            # 方法1: 检查Nuitka提供的特殊环境变量，这是Nuitka单文件打包的最佳方式
+            if 'NUITKA_ONEFILE_BINARY' in os.environ:
+                exe_path = os.environ['NUITKA_ONEFILE_BINARY']
+                self.append_log(f"使用NUITKA_ONEFILE_BINARY环境变量: {exe_path}", service_name="系统")
+                return exe_path
+            
+            # 方法2: 使用win32api获取真实可执行文件路径（Windows专用）
+            try:
+                import win32api
+                exe_path = win32api.GetModuleFileName(None)
+                exe_path = os.path.abspath(exe_path)
+                self.append_log(f"使用win32api方法: {exe_path}", service_name="系统")
+                return exe_path
+            except Exception as e:
+                self.append_log(f"win32api方法失败: {str(e)}", service_name="系统")
+            
+            # 方法3: 检查当前进程的命令行
+            try:
+                import psutil
+                # 获取当前进程ID
+                pid = os.getpid()
+                # 获取当前进程的命令行
+                process = psutil.Process(pid)
+                cmdline = process.cmdline()
+                if cmdline:
+                    # 命令行的第一个参数通常是可执行文件路径
+                    exe_path = os.path.abspath(cmdline[0])
+                    self.append_log(f"使用psutil方法: {exe_path}", service_name="系统")
+                    return exe_path
+            except Exception as e:
+                self.append_log(f"psutil方法失败: {str(e)}", service_name="系统")
+            
+            # 方法4: 尝试获取当前工作目录下的可执行文件
+            cwd = os.getcwd()
+            possible_path = os.path.join(cwd, "dufs_multi_gui_pyqt.exe")
+            if os.path.exists(possible_path):
+                self.append_log(f"使用当前目录下的可执行文件: {possible_path}", service_name="系统")
+                return possible_path
+        
+        # 方法5: 使用sys.argv[0]作为最后尝试
+        exe_path = os.path.abspath(sys.argv[0])
+        self.append_log(f"使用sys.argv[0]: {exe_path}", service_name="系统")
+        return exe_path
+    
     def add_auto_start(self):
         """添加系统自启动项"""
         try:
             if os.name == 'nt':  # Windows
                 import winreg
                 # 获取当前可执行文件路径
-                if getattr(sys, 'frozen', False):
-                    # 对于单文件打包程序，sys.argv[0]指向实际的可执行文件路径
-                    exe_path = os.path.abspath(sys.argv[0])
-                else:
-                    exe_path = sys.executable
+                exe_path = self.get_correct_exe_path()
                 
+                # 清理旧的自启动项
                 key_path = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+                    try:
+                        winreg.DeleteValue(key, "DufsGUI")
+                        self.append_log("已清理旧的自启动项", service_name="系统")
+                    except FileNotFoundError:
+                        pass  # 已经不存在，忽略
+                
+                # 设置新的自启动项
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
                     winreg.SetValueEx(key, "DufsGUI", 0, winreg.REG_SZ, f'"{exe_path}"')
-                self.append_log("已添加开机自启动", service_name="系统")
+                self.append_log(f"已添加开机自启动，路径: {exe_path}", service_name="系统")
             elif os.name == 'posix':  # Linux/macOS
                 if sys.platform == 'darwin':  # macOS
                     # 使用LaunchAgents
