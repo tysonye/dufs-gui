@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
     QFrame, QGroupBox, QGridLayout, QMenu, QAction,
     QMessageBox, QFileDialog, QDialog, QCheckBox, QSystemTrayIcon, QStyle, QToolTip, QStatusBar, QHeaderView, QPlainTextEdit,
-    QTabWidget
+    QTabWidget, QComboBox
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QColor, QIcon, QFontMetrics, QCursor
@@ -427,6 +427,700 @@ class DufsService:
         self.log_buffer = []
         # 日志刷新定时器
         self.log_timer = None
+        
+        # 公网访问相关属性
+        self.ngrok_process = None
+        self.public_url = ""
+        self.public_access_status = "stopped"  # stopped, starting, running, stopping
+        self.ngrok_authtoken = ""  # 用户配置的ngrok authtoken
+        self.ngrok_api_key = ""  # 用户配置的ngrok API key
+        self.ngrok_mode = "authtoken"  # 使用方式：authtoken或api_key
+        
+        # ngrok监控相关属性
+        self.ngrok_monitor_thread = None
+        self.ngrok_monitor_terminate = False
+        
+        # ngrok重新启动计数器，避免无限循环
+        self.ngrok_restart_count = 0
+        self.max_ngrok_restarts = 3
+        
+    def get_ngrok_path(self):
+        """获取ngrok路径，自动下载如果不存在"""
+        import platform
+        import shutil
+        import requests
+        
+        # 定义ngrok文件名
+        system = platform.system()
+        if system == "Windows":
+            ngrok_filename = "ngrok.exe"
+        else:
+            ngrok_filename = "ngrok"
+        
+        # 检查多个位置
+        check_paths = [
+            os.path.join(os.getcwd(), ngrok_filename),
+            os.path.join(config_dir, ngrok_filename),
+            get_resource_path(ngrok_filename)
+        ]
+        
+        for path in check_paths:
+            if os.path.exists(path):
+                return path
+        
+        # 尝试从系统PATH获取
+        if shutil.which(ngrok_filename):
+            return ngrok_filename
+        
+        # 如果都找不到，下载ngrok
+        print(f"正在下载ngrok...")
+        # 注意：这里使用print而不是append_log，因为get_ngrok_path可能在服务创建前调用
+        
+        # 构建下载URL
+        arch = platform.machine()
+        if system == "Windows":
+            if arch in ["AMD64", "x86_64"]:
+                download_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
+            else:
+                download_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-386.zip"
+        elif system == "Darwin":
+            if arch in ["AMD64", "x86_64"]:
+                download_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-amd64.zip"
+            else:
+                download_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-arm64.zip"
+        else:  # Linux
+            if arch in ["AMD64", "x86_64"]:
+                download_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz"
+            else:
+                download_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-386.tgz"
+        
+        try:
+            # 下载ngrok
+            response = requests.get(download_url, stream=True)
+            response.raise_for_status()
+            
+            # 保存到临时文件
+            import tempfile
+            import zipfile
+            import tarfile
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".zip" if ".zip" in download_url else ".tgz") as tmp_file:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        tmp_file.write(chunk)
+                tmp_path = tmp_file.name
+            
+            # 解压文件
+            extract_dir = tempfile.mkdtemp()
+            if ".zip" in download_url:
+                with zipfile.ZipFile(tmp_path, "r") as zip_ref:
+                    zip_ref.extractall(extract_dir)
+            else:  # tar.gz
+                with tarfile.open(tmp_path, "r:gz") as tar_ref:
+                    tar_ref.extractall(extract_dir)
+            
+            # 找到ngrok可执行文件
+            extracted_path = os.path.join(extract_dir, ngrok_filename)
+            if not os.path.exists(extracted_path):
+                # 可能在子目录中
+                for root, dirs, files in os.walk(extract_dir):
+                    if ngrok_filename in files:
+                        extracted_path = os.path.join(root, ngrok_filename)
+                        break
+            
+            # 复制到配置目录
+            target_path = os.path.join(config_dir, ngrok_filename)
+            shutil.copy2(extracted_path, target_path)
+            
+            # 设置执行权限（非Windows）
+            if system != "Windows":
+                os.chmod(target_path, 0o755)
+            
+            # 清理临时文件
+            os.unlink(tmp_path)
+            shutil.rmtree(extract_dir)
+            
+            print(f"ngrok已成功下载到: {target_path}")
+            return target_path
+        except Exception as e:
+            print(f"下载ngrok失败: {str(e)}")
+            return "ngrok"  # 回退到系统PATH
+        
+    def _stop_existing_ngrok_processes(self):
+        """停止系统中已存在的ngrok进程"""
+        try:
+            import psutil
+            
+            print("检查并停止已存在的ngrok进程...")
+            # 查找所有ngrok进程
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    # 检查进程名称或命令行中是否包含ngrok
+                    proc_name = proc.info['name'] if proc.info['name'] else ''
+                    proc_cmdline = ' '.join(proc.info['cmdline']) if proc.info['cmdline'] else ''
+                    
+                    if 'ngrok' in proc_name or 'ngrok' in proc_cmdline:
+                        print(f"发现已存在的ngrok进程，PID: {proc.info['pid']}，正在停止...")
+                        # 尝试优雅终止
+                        proc.terminate()
+                        # 等待进程退出
+                        try:
+                            proc.wait(timeout=2)
+                            print(f"ngrok进程 {proc.info['pid']} 已成功停止")
+                        except psutil.TimeoutExpired:
+                            # 超时后强制终止
+                            proc.kill()
+                            print(f"ngrok进程 {proc.info['pid']} 已强制终止")
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    # 进程不存在或无权限访问，跳过
+                    pass
+        except Exception as e:
+            print(f"停止已存在的ngrok进程失败: {str(e)}")
+    
+    def start_ngrok(self):
+        """启动ngrok内网穿透"""
+        print("="*50)
+        print("开始启动ngrok内网穿透")
+        print("="*50)
+        try:
+            # 检查并停止已存在的ngrok进程
+            print("1. 检查并停止已存在的ngrok进程...")
+            self._stop_existing_ngrok_processes()
+            print("   ✓ 已清理所有现有ngrok进程")
+            
+            # 获取ngrok路径
+            print("2. 获取ngrok路径...")
+            ngrok_path = self.get_ngrok_path()
+            print(f"   ✓ 使用ngrok路径: {ngrok_path}")
+            
+            # 优先使用用户配置的authtoken
+            current_authtoken = self.ngrok_authtoken
+            
+            # 如果用户没有配置authtoken，检查环境变量
+            if not current_authtoken:
+                current_authtoken = os.environ.get("NGROK_AUTHTOKEN")
+            
+            # 如果没有authtoken，提示用户
+            if not current_authtoken:
+                print(f"3. 未配置authtoken，ngrok可能无法正常工作")
+            else:
+                print(f"3. 使用authtoken: {current_authtoken[:10]}...{current_authtoken[-5:]}")
+            
+            # 检查ngrok版本
+            print("4. 检查ngrok版本...")
+            version_result = subprocess.run(
+                [ngrok_path, "version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True
+            )
+            if version_result.returncode == 0:
+                print(f"   ✓ ngrok版本: {version_result.stdout.strip()}")
+            else:
+                print(f"   ✗ 获取ngrok版本失败: {version_result.stderr}")
+            
+            # 构建ngrok命令
+            print("5. 构建ngrok命令...")
+            command = [ngrok_path]
+            
+            # 设置authtoken或API key
+            if self.ngrok_mode == "authtoken":
+                print("6. 设置authtoken...")
+                if current_authtoken:
+                    result = subprocess.run(
+                        [ngrok_path, "config", "add-authtoken", current_authtoken],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        universal_newlines=True
+                    )
+                    if result.returncode != 0:
+                        error_msg = f"   ✗ 设置authtoken失败: {result.stderr}"
+                        print(error_msg)
+                        # 尝试直接在启动命令中使用authtoken，而不是通过配置文件
+                        print("   ! 尝试直接在启动命令中使用authtoken...")
+                        command.extend(["--authtoken", current_authtoken])
+                    else:
+                        print(f"   ✓ authtoken设置成功")
+                else:
+                    print(f"   ⚠️  未配置authtoken，ngrok可能无法正常工作")
+                    print(f"   📌 请按照以下步骤配置authtoken:")
+                    print(f"   1. 访问 https://dashboard.ngrok.com/signup 注册账号")
+                    print(f"   2. 登录后，访问 https://dashboard.ngrok.com/get-started/your-authtoken 获取authtoken")
+                    print(f"   3. 在程序中保存authtoken或设置环境变量 NGROK_AUTHTOKEN")
+            elif self.ngrok_mode == "api_key":
+                print("6. 设置API key...")
+                if self.ngrok_api_key:
+                    print(f"7. 使用API key模式，添加API key...")
+                    command.extend(["--api-key", self.ngrok_api_key])
+                else:
+                    print(f"   ⚠️  未配置API key，ngrok可能无法正常工作")
+                    print(f"   📌 请按照以下步骤配置API key:")
+                    print(f"   1. 访问 https://dashboard.ngrok.com/api-keys 创建API key")
+                    print(f"   2. 在程序中保存API key")
+                    print(f"   3. 注意：API key用于调用ngrok REST API，不是用于启动隧道")
+            
+            # 添加http子命令
+            command.append("http")
+            
+            # 添加端口参数 - ngrok需要将流量转发到dufs服务实际运行的本地端口
+            local_port = str(self.port)
+            print(f"9. 获取到dufs服务端口: {local_port}")
+            command.append(local_port)
+            print(f"10. 完整ngrok命令: {' '.join(command)}")
+            
+            # 运行ngrok诊断命令，检测连接问题
+            print("11. 运行ngrok诊断命令...")
+            try:
+                diagnose_result = subprocess.run(
+                    [ngrok_path, "diagnose"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                    timeout=10  # 10秒超时
+                )
+                if diagnose_result.returncode != 0:
+                    print(f"   ⚠️  ngrok诊断结果（警告）: {diagnose_result.stderr}")
+                else:
+                    print(f"   ✓ ngrok诊断结果: {diagnose_result.stdout}")
+            except Exception as e:
+                print(f"   ✗ 运行ngrok诊断命令失败: {str(e)}")
+            
+            # 启动ngrok进程，使用更合适的参数
+            print(f"11. 启动ngrok进程...")
+            
+            # 清除之前的进程引用
+            if self.ngrok_process:
+                print("   ! 清理旧的ngrok进程引用")
+                self.ngrok_process = None
+            
+            # 验证本地端口是否正在被dufs服务使用
+            print(f"12. 验证本地端口 {local_port} 是否正在被使用...")
+            try:
+                import socket
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    # 如果连接失败，说明端口正在被使用，这是我们期望的状态
+                    if s.connect_ex(("127.0.0.1", int(local_port))) != 0:
+                        print(f"   ⚠️  警告：本地端口 {local_port} 似乎没有被使用，可能dufs服务没有正常启动")
+                    else:
+                        print(f"   ✓ 本地端口 {local_port} 正在被使用，dufs服务正常运行")
+            except Exception as e:
+                print(f"   ✗ 验证端口状态失败: {str(e)}")
+            
+            # 启动ngrok进程，使用更合适的参数
+            self.ngrok_process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                bufsize=1,  # 行缓冲
+                shell=False,  # 不使用shell
+                close_fds=False  # 保持文件描述符打开
+            )
+            
+            print(f"   ✓ ngrok进程已启动，PID: {self.ngrok_process.pid}")
+            
+            # 启动ngrok监控线程
+            print("11. 启动ngrok监控线程...")
+            self.ngrok_monitor_terminate = False
+            self.ngrok_monitor_thread = threading.Thread(target=self._monitor_ngrok_process, daemon=True)
+            self.ngrok_monitor_thread.start()
+            print("   ✓ ngrok监控线程已启动")
+            
+            # 使用更可靠的方式读取ngrok输出，避免进程阻塞
+            all_output = {}
+            all_output['stdout'] = []
+            all_output['stderr'] = []
+            
+            def read_output(pipe, prefix, output_list):
+                print(f"   ✓ 启动{prefix}读取线程")
+                while self.ngrok_process and self.ngrok_process.poll() is None:
+                    try:
+                        # 使用非阻塞方式读取，避免在Windows上出现问题
+                        import msvcrt
+                        import os
+                        
+                        # 检查管道是否可读
+                        if msvcrt.kbhit() or self.ngrok_process.poll() is not None:
+                            line = pipe.readline()
+                            if line:
+                                stripped_line = line.strip()
+                                output_list.append(stripped_line)
+                                print(f"{prefix}: {stripped_line}")
+                        else:
+                            # 短暂休眠，避免CPU占用过高
+                            time.sleep(0.1)
+                    except Exception as e:
+                        error_msg = f"读取ngrok {prefix}失败: {str(e)}"
+                        print(f"   ✗ {error_msg}")
+                        output_list.append(error_msg)
+                        break
+                print(f"   ✓ {prefix}读取线程已结束")
+            
+            # 启动两个线程来分别读取stdout和stderr
+            stdout_thread = threading.Thread(
+                target=read_output, 
+                args=(self.ngrok_process.stdout, "ngrok stdout", all_output['stdout']), 
+                daemon=True
+            )
+            stderr_thread = threading.Thread(
+                target=read_output, 
+                args=(self.ngrok_process.stderr, "ngrok stderr", all_output['stderr']), 
+                daemon=True
+            )
+            stdout_thread.start()
+            stderr_thread.start()
+            
+            # 检查进程是否真的启动了
+            print("12. 等待1秒检查ngrok进程状态...")
+            time.sleep(1)
+            
+            # 检查self.ngrok_process是否为None，避免并发访问问题
+            if self.ngrok_process is None:
+                print("   ✗ ngrok进程已被其他线程重置，跳过状态检查")
+                return None
+            
+            poll_result = self.ngrok_process.poll()
+            if poll_result is not None:
+                # 进程启动后立即退出，读取错误信息
+                print(f"   ✗ ngrok进程启动失败，进程已退出，退出码: {poll_result}")
+                
+                # 立即读取进程输出，不等待输出线程
+                print(f"   ✓ 立即读取ngrok进程输出...")
+                
+                # 直接读取所有输出，不依赖输出线程
+                direct_stdout = ""
+                direct_stderr = ""
+                
+                try:
+                    direct_stdout = self.ngrok_process.stdout.read()
+                except Exception as e:
+                    direct_stdout = f"读取stdout失败: {str(e)}"
+                
+                try:
+                    direct_stderr = self.ngrok_process.stderr.read()
+                except Exception as e:
+                    direct_stderr = f"读取stderr失败: {str(e)}"
+                
+                # 合并输出线程收集的输出
+                stdout_output = "\n".join(all_output['stdout'])
+                stderr_output = "\n".join(all_output['stderr'])
+                
+                # 将直接读取的输出添加到结果中
+                if direct_stdout:
+                    stdout_output += "\n" + direct_stdout
+                if direct_stderr:
+                    stderr_output += "\n" + direct_stderr
+                
+                error_msg = f"ngrok进程启动失败，退出码: {poll_result}\n\n" \
+                          f"=== 标准输出 ===\n{stdout_output}\n\n" \
+                          f"=== 错误输出 ===\n{stderr_output}\n\n" \
+                          f"=== 命令 ===\n{' '.join(command)}"
+                print(error_msg)
+                
+                # 清理资源
+                self.ngrok_process = None
+                self.public_access_status = "stopped"
+                self.ngrok_monitor_terminate = True
+                print("   ✓ 已清理ngrok资源")
+                # 返回错误信息，让上层处理
+                return error_msg
+            else:
+                print(f"   ✓ ngrok进程正在运行，PID: {self.ngrok_process.pid}")
+            
+            # 等待ngrok完全启动并准备就绪
+            print("13. 等待ngrok完全启动并准备就绪（3秒）...")
+            for i in range(3):
+                time.sleep(1)
+                print(f"   ... {i+1}秒")
+                
+                # 检查进程是否还在运行
+                if self.ngrok_process is not None and self.ngrok_process.poll() is not None:
+                    print(f"   ✗ ngrok进程在等待过程中退出，退出码: {self.ngrok_process.poll()}")
+                    # 读取剩余输出
+                    stdout_output = "\n".join(all_output['stdout'])
+                    stderr_output = "\n".join(all_output['stderr'])
+                    
+                    error_msg = f"ngrok进程启动后退出，退出码: {self.ngrok_process.poll()}\n\n" \
+                              f"=== 标准输出 ===\n{stdout_output}\n\n" \
+                              f"=== 错误输出 ===\n{stderr_output}"
+                    print(error_msg)
+                    
+                    # 清理资源
+                    self.ngrok_process = None
+                    self.public_access_status = "stopped"
+                    self.ngrok_monitor_terminate = True
+                    return error_msg
+            
+            print("14. 开始获取ngrok公网URL...")
+            # 获取ngrok提供的公网URL
+            self.public_url = self.get_ngrok_url(self.ngrok_process)
+            if self.public_url:
+                self.public_access_status = "running"
+                # 重置重启计数
+                self.ngrok_restart_count = 0
+                print(f"\n{'='*50}")
+                print(f"✓ ngrok已成功启动！")
+                print(f"✓ 公网URL: {self.public_url}")
+                print(f"{'='*50}")
+                return self.public_url
+            else:
+                # 进程还在运行但没有获取到URL，读取所有输出进行诊断
+                print(f"   ✗ 未能获取ngrok公网URL")
+                
+                # 等待输出线程读取更多数据
+                time.sleep(1)
+                
+                # 读取所有输出
+                stdout_output = "\n".join(all_output['stdout'])
+                stderr_output = "\n".join(all_output['stderr'])
+                
+                # 尝试直接读取剩余的输出
+                if self.ngrok_process is not None:
+                    try:
+                        remaining_stdout = self.ngrok_process.stdout.read()
+                        if remaining_stdout:
+                            stdout_output += "\n" + remaining_stdout
+                    except:
+                        pass
+                
+                    try:
+                        remaining_stderr = self.ngrok_process.stderr.read()
+                        if remaining_stderr:
+                            stderr_output += "\n" + remaining_stderr
+                    except:
+                        pass
+                
+                print(f"\n{'='*50}")
+                print(f"ngrok诊断信息:")
+                print(f"{'='*50}")
+                print(f"命令: {' '.join(command)}")
+                print(f"PID: {self.ngrok_process.pid}")
+                print(f"进程状态: {'运行中' if self.ngrok_process.poll() is None else '已退出'}")
+                print(f"\n=== 标准输出 ===")
+                print(stdout_output)
+                print(f"\n=== 错误输出 ===")
+                print(stderr_output)
+                print(f"{'='*50}")
+                
+                # 检查是否是authtoken问题
+                if "authtoken" in stderr_output.lower() or "unauthorized" in stderr_output.lower():
+                    print(f"\n❌ 问题诊断: ngrok需要有效的authtoken才能使用")
+                    print(f"   请按照以下步骤配置:")
+                    print(f"   1. 访问 https://dashboard.ngrok.com/signup 注册账号")
+                    print(f"   2. 登录后，访问 https://dashboard.ngrok.com/get-started/your-authtoken 获取authtoken")
+                    print(f"   3. 在命令行中运行: ngrok config add-authtoken <你的authtoken>")
+                elif "already online" in stderr_output.lower() or "ERR_NGROK_334" in stderr_output:
+                    print(f"\n❌ 问题诊断: 端口已被其他ngrok进程占用")
+                    print(f"   请先停止之前的ngrok进程或使用不同的端口")
+                elif "failed to connect" in stderr_output.lower() or "connection refused" in stderr_output.lower():
+                    print(f"\n❌ 问题诊断: 无法连接到ngrok服务器")
+                    print(f"   请检查网络连接或防火墙设置")
+                elif "listen tcp" in stderr_output.lower() and "bind: address already in use" in stderr_output.lower():
+                    print(f"\n❌ 问题诊断: 本地端口被占用")
+                    print(f"   请使用不同的本地端口或停止占用该端口的进程")
+                else:
+                    print(f"\n❌ 问题诊断: 无法确定具体问题，请查看上面的详细输出")
+                
+                # 清理资源
+                print("\n15. 清理ngrok资源...")
+                self.public_access_status = "stopped"
+                self.ngrok_monitor_terminate = True
+                if self.ngrok_process:
+                    try:
+                        self.ngrok_process.terminate()
+                        print(f"   ✓ 已发送终止信号到ngrok进程 {self.ngrok_process.pid}")
+                        self.ngrok_process.wait(timeout=2)
+                        print("   ✓ ngrok进程已终止")
+                    except:
+                        try:
+                            self.ngrok_process.kill()
+                            print("   ✓ 已强制终止ngrok进程")
+                        except Exception as e:
+                            print(f"   ✗ 强制终止ngrok进程失败: {str(e)}")
+                    self.ngrok_process = None
+                print("   ✓ 已清理所有ngrok资源")
+                return None
+        except Exception as e:
+            print(f"\n{'='*50}")
+            print(f"❌ 启动ngrok时发生未捕获异常")
+            print(f"{'='*50}")
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"异常类型: {type(e).__name__}")
+            print(f"异常信息: {str(e)}")
+            print(f"堆栈跟踪:\n{error_trace}")
+            print(f"{'='*50}")
+            
+            # 清理资源
+            self.public_access_status = "stopped"
+            self.ngrok_monitor_terminate = True
+            if self.ngrok_process:
+                try:
+                    self.ngrok_process.terminate()
+                    self.ngrok_process.wait(timeout=2)
+                except:
+                    try:
+                        self.ngrok_process.kill()
+                    except:
+                        pass
+                self.ngrok_process = None
+            return f"启动ngrok失败: {str(e)}\n\n{error_trace}"
+    
+    def _monitor_ngrok_process(self):
+        """监控ngrok进程状态"""
+        while not self.ngrok_monitor_terminate:
+            time.sleep(1)  # 每秒检查一次
+            
+            if self.ngrok_process is None:
+                break
+            
+            # 检查进程是否还在运行
+            poll_result = self.ngrok_process.poll()
+            if poll_result is not None:
+                print(f"ngrok进程已退出，退出码: {poll_result}")
+                
+                # 检查重新启动次数是否已达上限
+                if self.ngrok_restart_count < self.max_ngrok_restarts:
+                    # 尝试重新启动
+                    self._restart_ngrok()
+                    self.ngrok_restart_count += 1
+                else:
+                    print(f"ngrok重启次数已达上限 ({self.max_ngrok_restarts}次)，停止重试")
+                    # 重置重启计数
+                    self.ngrok_restart_count = 0
+                    # 停止监控线程
+                    self.ngrok_monitor_terminate = True
+                    # 更新状态
+                    self.public_access_status = "stopped"
+                    self.ngrok_process = None
+                break
+    
+    def _restart_ngrok(self):
+        """重新启动ngrok进程"""
+        print("尝试重新启动ngrok...")
+        
+        # 首先确保彻底清理之前的ngrok进程
+        if self.ngrok_process:
+            try:
+                self.ngrok_process.terminate()
+                self.ngrok_process.wait(timeout=2)
+            except:
+                try:
+                    self.ngrok_process.kill()
+                except:
+                    pass
+            self.ngrok_process = None
+        
+        # 停止旧的监控线程
+        self.ngrok_monitor_terminate = True
+        if self.ngrok_monitor_thread and self.ngrok_monitor_thread.is_alive():
+            # 等待旧的监控线程退出
+            time.sleep(1)
+        
+        # 重置监控线程终止标志
+        self.ngrok_monitor_terminate = False
+        
+        self.public_access_status = "stopped"
+        self.public_url = ""
+        
+        # 短暂延迟后重新启动
+        time.sleep(2)
+        self.start_ngrok()
+    
+    def get_ngrok_url(self, process):
+        """从ngrok进程输出中获取公网URL，优先使用ngrok本地API"""
+        import re
+        import requests
+        
+        # 检查进程是否有效
+        if process is None:
+            return None
+        
+        # 添加调试输出，显示正在尝试获取URL
+        print("正在获取ngrok公网URL...")
+        
+        # 方法1: 使用ngrok本地API获取URL（推荐方法）
+        print("尝试使用ngrok本地API获取URL...")
+        try:
+            # ngrok默认在127.0.0.1:4040提供API
+            response = requests.get("http://127.0.0.1:4040/api/tunnels", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                if data and "tunnels" in data:
+                    for tunnel in data["tunnels"]:
+                        if tunnel["public_url"]:
+                            print(f"通过API获取到公网URL: {tunnel['public_url']}")
+                            return tunnel["public_url"]
+            else:
+                print(f"ngrok API请求失败，状态码: {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            print(f"ngrok API请求异常: {str(e)}")
+        
+        # 方法2: 从进程输出中获取URL（备选方法）
+        print("尝试从ngrok进程输出中获取URL...")
+        
+        # 读取ngrok输出，尝试更多次并增加等待时间
+        for i in range(15):  # 最多尝试15次
+            try:
+                # 直接读取一行，不使用select，避免在Windows上出现错误
+                line = process.stdout.readline(1024)  # 限制读取大小，避免阻塞
+                if line:
+                    print(f"ngrok输出: {line.strip()}")
+                    # 支持多种ngrok输出格式
+                    patterns = [
+                        # 格式1: t=2023-01-01T00:00:00+0000 lvl=info msg="started tunnel" obj=tunnels name=command_line addr=http://localhost:5000 url=https://abc123.ngrok.io
+                        r'url=(https?://[\w\.-]+\.(ngrok\.io|ngrok-free\.app|ngrok\.dev))',
+                        # 格式2: Forwarding                    https://abc123.ngrok.io -> http://localhost:5000
+                        r'Forwarding\s+(https?://[\w\.-]+\.(ngrok\.io|ngrok-free\.app|ngrok\.dev))\s+->',
+                        # 格式3: https://abc123.ngrok.io -> http://localhost:5000
+                        r'(https?://[\w\.-]+\.(ngrok\.io|ngrok-free\.app|ngrok\.dev))\s+->',
+                        # 格式4: 直接匹配URL
+                        r'(https?://[\w\.-]+\.(ngrok\.io|ngrok-free\.app|ngrok\.dev))'
+                    ]
+                    
+                    for pattern in patterns:
+                        match = re.search(pattern, line)
+                        if match:
+                            print(f"匹配到公网URL: {match.group(1)}")
+                            return match.group(1)
+            except Exception as e:
+                print(f"读取ngrok输出失败: {str(e)}")
+                break
+            time.sleep(0.5)  # 等待500ms后重试，给ngrok更多时间输出
+        
+        print("未能获取ngrok公网URL")
+        return None
+    
+    def stop_ngrok(self):
+        """停止ngrok进程"""
+        # 终止监控线程
+        self.ngrok_monitor_terminate = True
+        if self.ngrok_monitor_thread and self.ngrok_monitor_thread.is_alive():
+            self.ngrok_monitor_thread.join(timeout=1)  # 等待1秒让线程结束
+        
+        if self.ngrok_process:
+            print("正在停止ngrok进程...")
+            self.ngrok_process.terminate()
+            try:
+                self.ngrok_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                print("ngrok进程终止超时，强制终止")
+                self.ngrok_process.kill()
+            self.ngrok_process = None
+            
+        self.public_access_status = "stopped"
+        self.public_url = ""
+        print("ngrok已停止")
+            
+    def get_resource_path(self, resource_name):
+        """获取资源文件路径"""
+        if getattr(sys, 'frozen', False):
+            # 打包后的可执行文件
+            base_path = sys._MEIPASS
+        else:
+            # 开发模式
+            base_path = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(base_path, resource_name)
 
 class ServiceManager:
     """服务管理器，统一管理所有服务实例"""
@@ -977,7 +1671,9 @@ class DufsMultiGUI(QMainWindow):
         self._add_title_bar(main_layout)
         self._add_button_group(main_layout)
         self._add_service_list(main_layout)
+        self._add_ngrok_config(main_layout)
         self._add_access_address(main_layout)
+        self._add_public_access_address(main_layout)
         self._add_log_window(main_layout)
         
         # 设置状态栏
@@ -998,6 +1694,122 @@ class DufsMultiGUI(QMainWindow):
         # 显示窗口
         self.setWindowFlags(self.windowFlags() | Qt.WindowMinimizeButtonHint)
         self.show()
+    
+    def _add_ngrok_config(self, main_layout):
+        """添加ngrok配置UI"""
+        ngrok_group = QGroupBox("ngrok配置")
+        ngrok_layout = QVBoxLayout(ngrok_group)
+        ngrok_layout.setContentsMargins(15, 15, 15, 15)
+        ngrok_layout.setSpacing(10)
+        
+        # 选择ngrok使用方式
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("使用方式:"))
+        
+        self.ngrok_mode_combo = QComboBox()
+        self.ngrok_mode_combo.addItems(["authtoken", "api_key"])
+        self.ngrok_mode_combo.currentTextChanged.connect(self.on_ngrok_mode_changed)
+        mode_layout.addWidget(self.ngrok_mode_combo)
+        mode_layout.addStretch()
+        ngrok_layout.addLayout(mode_layout)
+        
+        # authtoken配置 - 使用QWidget容器包装
+        self.authtoken_widget = QWidget()
+        authtoken_layout = QHBoxLayout(self.authtoken_widget)
+        authtoken_layout.setContentsMargins(0, 0, 0, 0)
+        authtoken_layout.addWidget(QLabel("Authtoken:"))
+        
+        self.authtoken_edit = QLineEdit()
+        self.authtoken_edit.setPlaceholderText("请输入ngrok authtoken")
+        self.authtoken_edit.setEchoMode(QLineEdit.Password)
+        authtoken_layout.addWidget(self.authtoken_edit)
+        
+        authtoken_save_btn = QPushButton("保存Authtoken")
+        authtoken_save_btn.clicked.connect(self.save_ngrok_authtoken)
+        authtoken_layout.addWidget(authtoken_save_btn)
+        ngrok_layout.addWidget(self.authtoken_widget)
+        
+        # API key配置 - 使用QWidget容器包装（默认隐藏）
+        self.api_key_widget = QWidget()
+        api_key_layout = QHBoxLayout(self.api_key_widget)
+        api_key_layout.setContentsMargins(0, 0, 0, 0)
+        api_key_layout.addWidget(QLabel("API Key:"))
+        
+        self.api_key_edit = QLineEdit()
+        self.api_key_edit.setPlaceholderText("请输入ngrok API key")
+        self.api_key_edit.setEchoMode(QLineEdit.Password)
+        api_key_layout.addWidget(self.api_key_edit)
+        
+        api_key_save_btn = QPushButton("保存API Key")
+        api_key_save_btn.clicked.connect(self.save_ngrok_api_key)
+        api_key_layout.addWidget(api_key_save_btn)
+        ngrok_layout.addWidget(self.api_key_widget)
+        
+        # 默认显示authtoken配置，隐藏API key配置
+        self.api_key_widget.setVisible(False)
+        
+        # 添加使用提示
+        tip_label = QLabel("提示：免费版ngrok每次重启URL会变化，建议使用Dufs内置认证保护共享文件夹")
+        tip_label.setStyleSheet("color: #7F8C8D; font-size: 11px; font-style: italic;")
+        ngrok_layout.addWidget(tip_label)
+        
+        main_layout.addWidget(ngrok_group)
+    
+    def on_ngrok_mode_changed(self, mode):
+        """切换ngrok使用方式"""
+        # 显示对应的配置项
+        if mode == "authtoken":
+            self.authtoken_widget.setVisible(True)
+            self.api_key_widget.setVisible(False)
+        else:
+            self.authtoken_widget.setVisible(False)
+            self.api_key_widget.setVisible(True)
+    
+    def save_ngrok_authtoken(self):
+        """保存ngrok authtoken"""
+        authtoken = self.authtoken_edit.text().strip()
+        if not authtoken:
+            QMessageBox.warning(self, "提示", "请输入authtoken")
+            return
+        
+        try:
+            # 保存authtoken到所有服务
+            for service in self.manager.services:
+                service.ngrok_authtoken = authtoken
+                service.ngrok_mode = "authtoken"
+            
+            # 使用ngrok命令保存authtoken到配置文件
+            result = subprocess.run(
+                ["ngrok", "config", "add-authtoken", authtoken],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                QMessageBox.information(self, "成功", "authtoken已保存")
+                self.authtoken_edit.clear()
+            else:
+                QMessageBox.warning(self, "失败", f"保存authtoken到配置文件失败: {result.stderr}")
+        except Exception as e:
+            QMessageBox.warning(self, "失败", f"保存authtoken失败: {str(e)}")
+    
+    def save_ngrok_api_key(self):
+        """保存ngrok API key"""
+        api_key = self.api_key_edit.text().strip()
+        if not api_key:
+            QMessageBox.warning(self, "提示", "请输入API key")
+            return
+        
+        try:
+            # 保存API key到所有服务
+            for service in self.manager.services:
+                service.ngrok_api_key = api_key
+                service.ngrok_mode = "api_key"
+            
+            QMessageBox.information(self, "成功", "API key已保存")
+            self.api_key_edit.clear()
+        except Exception as e:
+            QMessageBox.warning(self, "失败", f"保存API key失败: {str(e)}")
     
     def save_config(self):
         """保存服务配置到JSON文件"""
@@ -1369,9 +2181,9 @@ Categories=Utility;
         service_layout.setContentsMargins(15, 15, 15, 15)
         
         self.service_tree = QTreeWidget()
-        # 移除复选框列，列数改为6
-        self.service_tree.setColumnCount(6)
-        self.service_tree.setHeaderLabels(["服务名称", "端口", "状态", "认证", "权限", "服务路径"])
+        # 添加公网访问列，列数改为7
+        self.service_tree.setColumnCount(7)
+        self.service_tree.setHeaderLabels(["服务名称", "端口", "状态", "公网访问", "认证", "权限", "服务路径"])
         self.service_tree.setAlternatingRowColors(True)
         # 改为单选模式
         self.service_tree.setSelectionMode(QTreeWidget.SingleSelection)
@@ -1380,12 +2192,13 @@ Categories=Utility;
         # 移除缩进，避免服务名称前面空白
         self.service_tree.setIndentation(0)
         # 调整各列宽度，确保初始界面不需要水平滚动条
-        self.service_tree.setColumnWidth(0, 140)  # 服务名称
+        self.service_tree.setColumnWidth(0, 120)  # 服务名称
         self.service_tree.setColumnWidth(1, 70)   # 端口
         self.service_tree.setColumnWidth(2, 90)   # 状态
-        self.service_tree.setColumnWidth(3, 140)  # 认证
-        self.service_tree.setColumnWidth(4, 110)  # 权限
-        self.service_tree.setColumnWidth(5, 250)  # 服务路径
+        self.service_tree.setColumnWidth(3, 120)  # 公网访问
+        self.service_tree.setColumnWidth(4, 120)  # 认证
+        self.service_tree.setColumnWidth(5, 100)  # 权限
+        self.service_tree.setColumnWidth(6, 200)  # 服务路径
         
         # 设置表头标签居中显示
         header = self.service_tree.header()
@@ -1393,9 +2206,9 @@ Categories=Utility;
             header.setDefaultAlignment(Qt.AlignCenter)
         
         # 设置表头拉伸策略，最后一列自动拉伸
-        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        header.setSectionResizeMode(6, QHeaderView.Stretch)
         # 其他列固定宽度，不允许用户调整
-        for i in range(5):
+        for i in range(6):
             header.setSectionResizeMode(i, QHeaderView.Fixed)
         
         service_layout.addWidget(self.service_tree)
@@ -1423,6 +2236,37 @@ Categories=Utility;
         
         addr_group.setLayout(addr_layout)
         main_layout.addWidget(addr_group)
+    
+    def _add_public_access_address(self, main_layout):
+        """添加公网访问地址UI"""
+        public_group = QGroupBox("公网访问")
+        public_layout = QHBoxLayout()
+        public_layout.setContentsMargins(15, 15, 15, 15)
+        public_layout.setSpacing(10)
+        
+        # 公网地址显示
+        public_layout.addWidget(QLabel("公网地址: "))
+        self.public_addr_edit = QLineEdit()
+        self.public_addr_edit.setReadOnly(True)
+        public_layout.addWidget(self.public_addr_edit)
+        
+        # 复制按钮
+        self.public_copy_btn = QPushButton("复制公网地址")
+        self.public_copy_btn.clicked.connect(self.copy_public_address)
+        public_layout.addWidget(self.public_copy_btn)
+        
+        # 浏览器访问按钮
+        self.public_browse_btn = QPushButton("浏览器访问公网")
+        self.public_browse_btn.clicked.connect(self.browser_access_public)
+        public_layout.addWidget(self.public_browse_btn)
+        
+        # 公网访问控制按钮
+        self.public_access_btn = QPushButton("启动公网访问")
+        self.public_access_btn.clicked.connect(self.toggle_public_access_from_ui)
+        public_layout.addWidget(self.public_access_btn)
+        
+        public_group.setLayout(public_layout)
+        main_layout.addWidget(public_group)
     
     def _add_log_window(self, main_layout):
         """添加日志窗口"""
@@ -1560,8 +2404,12 @@ Categories=Utility;
         delete_action = QAction("删除服务", self)
         delete_action.triggered.connect(lambda: self.delete_service())
         
-        # 添加分隔线
-        menu.addSeparator()
+        # 添加公网访问相关菜单项
+        start_public_action = QAction("启动公网访问", self)
+        start_public_action.triggered.connect(lambda: self.start_public_access(index))
+        
+        stop_public_action = QAction("停止公网访问", self)
+        stop_public_action.triggered.connect(lambda: self.stop_public_access(index))
         
         # 根据服务状态启用/禁用菜单项
         service = self.manager.services[index]
@@ -1569,9 +2417,17 @@ Categories=Utility;
         stop_action.setEnabled(service.status == ServiceStatus.RUNNING)
         view_log_action.setEnabled(service.status == ServiceStatus.RUNNING)
         
+        # 根据服务状态和公网访问状态启用/禁用公网访问菜单项
+        start_public_action.setEnabled(service.status == ServiceStatus.RUNNING and service.public_access_status != "running")
+        stop_public_action.setEnabled(service.public_access_status == "running")
+        
         # 添加菜单项到菜单
         menu.addAction(start_action)
         menu.addAction(stop_action)
+        menu.addSeparator()
+        menu.addAction(start_public_action)
+        menu.addAction(stop_public_action)
+        menu.addSeparator()
         menu.addAction(view_log_action)
         menu.addAction(edit_action)
         menu.addSeparator()
@@ -2055,6 +2911,14 @@ Categories=Utility;
             clipboard.setText(address)
             self.status_bar.showMessage("地址已复制到剪贴板")
     
+    def copy_public_address(self):
+        """复制公网访问地址到剪贴板"""
+        address = self.public_addr_edit.text()
+        if address:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(address)
+            self.status_bar.showMessage("公网地址已复制到剪贴板")
+    
     def browser_access(self):
         """在浏览器中访问服务"""
         address = self.addr_edit.text()
@@ -2068,12 +2932,53 @@ Categories=Utility;
         else:
             QMessageBox.warning(self, "警告", "请先选择一个服务")
     
+    def browser_access_public(self):
+        """在浏览器中访问公网服务"""
+        address = self.public_addr_edit.text()
+        if address:
+            try:
+                import webbrowser
+                webbrowser.open(address)
+            except Exception as e:
+                self.append_log(f"公网访问失败: {str(e)}", error=True)
+                QMessageBox.warning(self, "警告", f"公网访问失败: {str(e)}")
+        else:
+            QMessageBox.warning(self, "警告", "公网地址为空")
+    
+    def toggle_public_access_from_ui(self):
+        """从UI切换公网访问状态"""
+        # 获取当前选中的服务
+        selected_items = self.service_tree.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "警告", "请先选择一个服务")
+            return
+        
+        # 获取选中的服务索引
+        selected_item = selected_items[0]
+        index = selected_item.data(0, Qt.UserRole)
+        if index is None:
+            QMessageBox.warning(self, "警告", "无效的服务索引")
+            return
+        
+        # 切换公网访问状态
+        self.toggle_public_access(index)
+    
+    def update_public_access_ui(self, service):
+        """更新公网访问UI组件"""
+        if service and service.public_url:
+            self.public_addr_edit.setText(service.public_url)
+            self.public_access_btn.setText("停止公网访问")
+        else:
+            self.public_addr_edit.setText("")
+            self.public_access_btn.setText("启动公网访问")
+    
     def on_service_selected(self):
         """处理服务列表选择事件"""
         # 获取当前选中的服务
         selected_items = self.service_tree.selectedItems()
         if not selected_items:
             self.addr_edit.setText("")
+            self.update_public_access_ui(None)
             return
         
         # 获取选中的服务项
@@ -2083,6 +2988,7 @@ Categories=Utility;
         index = selected_item.data(0, Qt.UserRole)
         if index is None:
             self.addr_edit.setText("")
+            self.update_public_access_ui(None)
             return
         
         # 获取服务对象
@@ -2090,6 +2996,9 @@ Categories=Utility;
         
         # 更新访问地址
         self.refresh_address(index)
+        
+        # 更新公网访问UI
+        self.update_public_access_ui(service)
         
         # 切换到对应的日志标签
         if service.log_widget:
@@ -2107,6 +3016,129 @@ Categories=Utility;
             self.addr_edit.setText(service.local_addr)
         else:
             self.addr_edit.setText("")
+    
+    def toggle_public_access(self, index):
+        """切换公网访问状态"""
+        if 0 <= index < len(self.manager.services):
+            service = self.manager.services[index]
+            if service.public_access_status == "running":
+                self.stop_public_access(index)
+            else:
+                self.start_public_access(index)
+    
+    def start_public_access(self, index):
+        """启动公网访问"""
+        if 0 <= index < len(self.manager.services):
+            service = self.manager.services[index]
+            if service.status != ServiceStatus.RUNNING:
+                QMessageBox.warning(self, "提示", "请先启动服务")
+                return
+            
+            # 检查authtoken或API key是否已配置
+            authtoken_configured = False
+            if service.ngrok_mode == "authtoken":
+                # 检查authtoken是否已配置
+                if service.ngrok_authtoken or os.environ.get("NGROK_AUTHTOKEN"):
+                    authtoken_configured = True
+                else:
+                    # 未配置authtoken，显示弹窗提醒
+                    msg_box = QMessageBox()
+                    msg_box.setIcon(QMessageBox.Warning)
+                    msg_box.setWindowTitle("提示")
+                    msg_box.setText("未配置ngrok authtoken")
+                    msg_box.setInformativeText(
+                        "ngrok需要authtoken才能正常工作，请按照以下步骤配置：\n\n" \
+                        "1. 访问 https://dashboard.ngrok.com/signup 注册账号\n" \
+                        "2. 登录后，访问 https://dashboard.ngrok.com/get-started/your-authtoken 获取authtoken\n" \
+                        "3. 在程序中保存authtoken或设置环境变量 NGROK_AUTHTOKEN"
+                    )
+                    msg_box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+                    msg_box.setDefaultButton(QMessageBox.Ok)
+                    
+                    # 显示弹窗
+                    result = msg_box.exec_()
+                    if result == QMessageBox.Ok:
+                        # 打开ngrok官网地址
+                        import webbrowser
+                        webbrowser.open("https://dashboard.ngrok.com/signup")
+                    elif result == QMessageBox.Cancel:
+                        # 终止启动公网服务
+                        return
+            elif service.ngrok_mode == "api_key":
+                # 检查API key是否已配置
+                if service.ngrok_api_key:
+                    authtoken_configured = True
+                else:
+                    # 未配置API key，显示弹窗提醒
+                    msg_box = QMessageBox()
+                    msg_box.setIcon(QMessageBox.Warning)
+                    msg_box.setWindowTitle("提示")
+                    msg_box.setText("未配置ngrok API key")
+                    msg_box.setInformativeText(
+                        "ngrok API key用于调用ngrok REST API，请按照以下步骤配置：\n\n" \
+                        "1. 访问 https://dashboard.ngrok.com/api-keys 创建API key\n" \
+                        "2. 在程序中保存API key"
+                    )
+                    msg_box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+                    msg_box.setDefaultButton(QMessageBox.Ok)
+                    
+                    # 显示弹窗
+                    result = msg_box.exec_()
+                    if result == QMessageBox.Ok:
+                        # 打开ngrok官网地址
+                        import webbrowser
+                        webbrowser.open("https://dashboard.ngrok.com/api-keys")
+                    elif result == QMessageBox.Cancel:
+                        # 终止启动公网服务
+                        return
+            
+            # 设置公网访问状态为启动中
+            service.public_access_status = "starting"
+            self.update_service_list()
+            
+            # 在后台线程中启动ngrok，避免阻塞UI
+            def start_ngrok_thread():
+                try:
+                    # 使用QTimer确保在主线程中调用UI方法
+                    from PyQt5.QtCore import QTimer
+                    QTimer.singleShot(0, lambda: self.append_log(f"正在为服务 {service.name} 启动ngrok...", service_name=service.name))
+                    # 启动ngrok
+                    result = service.start_ngrok()
+                    if isinstance(result, str):
+                        if result.startswith("http"):
+                            # 返回的是公网URL
+                            QTimer.singleShot(0, lambda: self.append_log(f"ngrok已成功启动，公网URL: {result}", service_name=service.name))
+                        else:
+                            # 返回的是错误信息
+                            error_msg = f"ngrok启动失败: {result}"
+                            QTimer.singleShot(0, lambda: self.append_log(error_msg, error=True, service_name=service.name))
+                            QTimer.singleShot(0, lambda: QMessageBox.critical(self, "ngrok启动失败", error_msg))
+                    else:
+                        QTimer.singleShot(0, lambda: self.append_log(f"ngrok启动失败，无法获取公网URL", error=True, service_name=service.name))
+                except Exception as e:
+                    error_msg = f"启动ngrok失败: {str(e)}"
+                    QTimer.singleShot(0, lambda: self.append_log(error_msg, error=True, service_name=service.name))
+                    QTimer.singleShot(0, lambda: QMessageBox.critical(self, "ngrok启动失败", error_msg))
+                finally:
+                    # 使用QTimer确保在主线程中调用UI方法
+                    from PyQt5.QtCore import QTimer
+                    QTimer.singleShot(0, self.update_service_list)
+                    QTimer.singleShot(0, lambda: self.update_public_access_ui(service))
+            
+            thread = threading.Thread(target=start_ngrok_thread)
+            thread.daemon = True
+            thread.start()
+    
+    def stop_public_access(self, index):
+        """停止公网访问"""
+        if 0 <= index < len(self.manager.services):
+            service = self.manager.services[index]
+            # 使用QTimer确保在主线程中调用UI方法
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self.append_log(f"正在为服务 {service.name} 停止ngrok...", service_name=service.name))
+            service.stop_ngrok()
+            QTimer.singleShot(0, lambda: self.append_log(f"ngrok已成功停止", service_name=service.name))
+            QTimer.singleShot(0, self.update_service_list)
     
     def update_service_list(self):
         """更新服务列表"""
@@ -2133,34 +3165,45 @@ Categories=Utility;
                 perms_info.append("删除")
             perms_text = ", ".join(perms_info) if perms_info else ""
             
-            # 创建树项（移除复选框列）
+            # 创建树项（添加公网访问列）
             status = service.status
+            
+            # 创建树项，公网访问列根据服务状态显示不同内容
+            public_access_text = ""
+            if service.status != ServiceStatus.RUNNING:
+                public_access_text = "请先启动服务"
+            elif service.public_access_status == "running":
+                public_access_text = "运行中"
+            elif service.public_access_status == "starting":
+                public_access_text = "启动中"
+            elif service.public_access_status == "stopping":
+                public_access_text = "停止中"
+            else:
+                public_access_text = "未启动"
             
             item = QTreeWidgetItem([
                 service.name,
                 service.port,
                 status,
+                public_access_text,
                 auth_info,
                 perms_text,
                 service.serve_path
             ])
             
-            # 根据服务状态设置状态列的颜色
-            color = AppConstants.STATUS_COLORS.get(status, "#95a5a6")  # 默认灰色
-            item.setForeground(2, QColor(color))
-            
             # 设置所有列的内容居中显示
             for col in range(self.service_tree.columnCount()):
                 item.setTextAlignment(col, Qt.AlignCenter)
             
-            # 设置状态列的文本颜色（状态列现在是索引2）
-            if service.status == ServiceStatus.RUNNING:
-                item.setForeground(2, QColor('green'))
-            else:
-                item.setForeground(2, QColor('red'))
-                
+            # 设置状态列的文本颜色（状态列是索引2）
+            color = AppConstants.STATUS_COLORS.get(status, "#95a5a6")  # 默认灰色
+            item.setForeground(2, QColor(color))
+            
             # 先将树项添加到树控件中
             self.service_tree.addTopLevelItem(item)
+            
+            # 不再在服务列表中显示公网访问按钮，改为通过右键菜单操作
+            # 公网访问状态已通过文本显示在第4列
             
             # 然后将服务在self.manager.services列表中的实际索引存储到树项中
             item.setData(0, Qt.UserRole, i)
@@ -2920,25 +3963,29 @@ Categories=Utility;
     def _update_service_after_start(self, service, index):
         """服务启动后更新状态和UI"""
         # 更新服务状态
-        self.append_log(f"进程正常运行，更新服务状态", service_name=service.name, service=service)
         with service.lock:
             service.status = ServiceStatus.RUNNING
         
         # 启动监控线程
-        self.append_log(f"启动监控线程", service_name=service.name, service=service)
         threading.Thread(target=self.monitor_service, args=(service, index), daemon=True).start()
         
-        # 更新服务列表 - 通过QTimer确保在主线程中执行
-        self.append_log(f"更新服务列表", service_name=service.name, service=service)
-        QTimer.singleShot(0, lambda: self.status_updated.emit())
-        # 服务地址会在update_service_list函数中自动刷新，不需要单独调用
+        # 所有UI操作都通过信号槽机制在主线程中执行
+        from PyQt5.QtCore import QTimer
         
-        # 更新状态栏 - 通过QTimer在主线程中执行
-        self.append_log(f"服务启动成功", service_name=service.name, service=service)
+        # 记录日志
+        QTimer.singleShot(0, lambda: self.append_log(f"进程正常运行，更新服务状态", service_name=service.name, service=service))
+        QTimer.singleShot(0, lambda: self.append_log(f"启动监控线程", service_name=service.name, service=service))
+        QTimer.singleShot(0, lambda: self.append_log(f"更新服务列表", service_name=service.name, service=service))
+        QTimer.singleShot(0, lambda: self.append_log(f"服务启动成功", service_name=service.name, service=service))
+        
+        # 更新服务列表
+        QTimer.singleShot(0, self.status_updated.emit)
+        
+        # 更新状态栏
         status_msg = f"已启动服务: {service.name} | 访问地址: {service.local_addr}"
         QTimer.singleShot(0, lambda: self.status_bar.showMessage(status_msg))
         
-        # 刷新托盘菜单 - 通过QTimer在主线程中执行
+        # 刷新托盘菜单
         QTimer.singleShot(0, self.refresh_tray_menu)
     
     def stop_service(self, index_or_service=None):
