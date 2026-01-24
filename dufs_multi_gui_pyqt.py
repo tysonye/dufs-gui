@@ -559,8 +559,9 @@ class LogManager:
     def _append_log_ui(self, message, error=False, service_name="", service=None):
         """在UI线程中添加日志条目"""
         if service and service.log_widget:
-            # 添加日志到缓冲区
-            service.log_buffer.append((message, error))
+            # 添加日志到缓冲区（使用锁保护，确保线程安全）
+            with service.lock:
+                service.log_buffer.append((message, error))
             
             # 如果定时器未激活，启动定时器
             if service.log_timer is None:
@@ -795,9 +796,19 @@ class DufsService:
             self.append_log(f"停止已存在的ngrok进程失败: {str(e)}", error=True)
     
     def start_ngrok(self):
-        """启动ngrok内网穿透"""
+        """启动ngrok内网穿透，将核心逻辑移至后台线程"""
+        self.append_log(f"开始启动ngrok内网穿透...")
+        # 启动后台线程处理ngrok启动逻辑
+        threading.Thread(target=self._start_ngrok_thread, daemon=True).start()
+    
+    def _start_ngrok_thread(self):
+        """在后台线程中处理ngrok启动逻辑"""
         try:
-            self.append_log(f"开始启动ngrok内网穿透...")
+            # 设置公网访问状态为启动中
+            self.public_access_status = "starting"
+            # 通知UI更新
+            if self.gui_instance:
+                self.gui_instance.status_updated.emit()
             
             # 检查并停止已存在的ngrok进程
             self._stop_existing_ngrok_processes()
@@ -867,7 +878,8 @@ class DufsService:
             if self.ngrok_process is None:
                 self.append_log(f"✗ ngrok启动失败", error=True)
                 self.append_log(f"{'='*50}")
-                return None
+                self._cleanup_ngrok_resources()
+                return
             
             poll_result = self.ngrok_process.poll()
             if poll_result is not None:
@@ -904,11 +916,11 @@ class DufsService:
                     self.append_log(f"✗ 遇到ERR_NGROK_334错误: 该endpoint已被其他ngrok进程使用")
                     self.append_log(f"   请停止其他ngrok进程或使用不同的endpoint")
                     # 清理资源
-                    self.ngrok_process = None
-                    self.public_access_status = "stopped"
-                    self.ngrok_monitor_terminate = True
-                    self.append_log(f"{'='*50}")
-                    return None
+                    self._cleanup_ngrok_resources()
+                    # 通知UI更新
+                    if self.gui_instance:
+                        self.gui_instance.status_updated.emit()
+                    return
                 
                 # 只输出关键错误信息
                 if stdout_output:
@@ -917,11 +929,11 @@ class DufsService:
                     self.append_log(f"错误输出: {stderr_output}", error=True)
                 
                 # 清理资源
-                self.ngrok_process = None
-                self.public_access_status = "stopped"
-                self.ngrok_monitor_terminate = True
-                self.append_log(f"{'='*50}")
-                return None
+                self._cleanup_ngrok_resources()
+                # 通知UI更新
+                if self.gui_instance:
+                    self.gui_instance.status_updated.emit()
+                return
             else:
                 pass
             
@@ -942,11 +954,8 @@ class DufsService:
                         self.append_log(f"✗ 遇到ERR_NGROK_334错误: 该endpoint已被其他ngrok进程使用")
                         self.append_log(f"   请停止其他ngrok进程或使用不同的endpoint")
                         # 清理资源
-                        self.ngrok_process = None
-                        self.public_access_status = "stopped"
-                        self.ngrok_monitor_terminate = True
-                        self.append_log(f"{'='*50}")
-                        return None
+                        self._cleanup_ngrok_resources()
+                        return
                     
                     # 只输出关键错误信息
                     if stdout_output:
@@ -955,11 +964,8 @@ class DufsService:
                         self.append_log(f"错误输出: {stderr_output}", error=True)
                     
                     # 清理资源
-                    self.ngrok_process = None
-                    self.public_access_status = "stopped"
-                    self.ngrok_monitor_terminate = True
-                    self.append_log(f"{'='*50}")
-                    return None
+                    self._cleanup_ngrok_resources()
+                    return
             
 
             # 获取ngrok提供的公网URL
@@ -971,7 +977,10 @@ class DufsService:
                 self.append_log(f"✓ ngrok已成功启动！")
                 self.append_log(f"✓ 公网URL: {self.public_url}")
                 self.append_log(f"{'='*50}")
-                return self.public_url
+                # 通知UI更新状态
+                if self.gui_instance:
+                    self.gui_instance.status_updated.emit()
+                return
             
             # 进程还在运行但没有获取到URL，读取所有输出进行诊断
             self.append_log(f"✗ 未能获取ngrok公网URL", error=True)
@@ -1045,8 +1054,9 @@ class DufsService:
                     except (OSError, ValueError, AttributeError) as e:
                         self.append_log(f"   ✗ 强制终止ngrok进程失败: {str(e)}", error=True)
                 self.ngrok_process = None
-            self.append_log("   ✓ 已清理所有ngrok资源")
-            return None
+            # 清理资源
+            self._cleanup_ngrok_resources()
+            return
         except (subprocess.SubprocessError, requests.exceptions.RequestException, OSError, ValueError, AttributeError) as e:
             self.append_log(f"{'='*50}")
             self.append_log(f"❌ 启动ngrok时发生异常: {str(e)}")
@@ -1066,7 +1076,38 @@ class DufsService:
                         pass
                 finally:
                     self.ngrok_process = None
-            return None
+            self._cleanup_ngrok_resources()
+            # 通知UI更新
+            if self.gui_instance:
+                self.gui_instance.status_updated.emit()
+            return
+    
+    def _cleanup_ngrok_resources(self):
+        """清理ngrok资源"""
+        self.append_log("\n正在清理ngrok资源...")
+        self.public_access_status = "stopped"
+        self.ngrok_monitor_terminate = True
+        
+        if self.ngrok_process:
+            try:
+                self.ngrok_process.terminate()
+                self.append_log(f"   ✓ 已发送终止信号到ngrok进程")
+                self.ngrok_process.wait(timeout=2)
+                self.append_log("   ✓ ngrok进程已终止")
+            except subprocess.TimeoutExpired:
+                try:
+                    self.ngrok_process.kill()
+                    self.append_log("   ✓ 已强制终止ngrok进程")
+                except (OSError, ValueError, AttributeError) as e:
+                    self.append_log(f"   ✗ 强制终止ngrok进程失败: {str(e)}", error=True)
+            except (OSError, ValueError, AttributeError) as e:
+                self.append_log(f"   ✗ 终止ngrok进程失败: {str(e)}", error=True)
+            finally:
+                self.ngrok_process = None
+        
+        self.public_url = ""
+        self.append_log("   ✓ 已清理所有ngrok资源")
+        self.append_log(f"{'='*50}")
     
     def _monitor_ngrok_process(self):
         """监控ngrok进程状态"""
@@ -1090,11 +1131,8 @@ class DufsService:
                     self.append_log(f"ngrok重启次数已达上限 ({self.max_ngrok_restarts}次)，停止重试")
                     # 重置重启计数
                     self.ngrok_restart_count = 0
-                    # 停止监控线程
-                    self.ngrok_monitor_terminate = True
-                    # 更新状态
-                    self.public_access_status = "stopped"
-                    self.ngrok_process = None
+                    # 清理资源
+                    self._cleanup_ngrok_resources()
                 break
     
     def _restart_ngrok(self):
@@ -1226,6 +1264,9 @@ class DufsService:
         self.public_access_status = "stopped"
         self.public_url = ""
         self.append_log("ngrok已停止")
+        # 通知UI更新
+        if self.gui_instance:
+            self.gui_instance.status_updated.emit()
             
     def get_resource_path(self, resource_name):
         """获取资源文件路径"""
@@ -1267,14 +1308,22 @@ class ServiceManager:
         """获取所有运行中的服务"""
         return [s for s in self.services if s.status == ServiceStatus.RUNNING]
     
-    def check_port_available(self, port, exclude_service=None):
-        """检查端口是否可用"""
+    def is_port_available(self, port, exclude_service=None):
+        """检查端口是否可用（未被任何服务或进程占用）
+        
+        Args:
+            port (int): 要检查的端口号
+            exclude_service: 要排除的服务（检查当前服务列表时忽略该服务）
+            
+        Returns:
+            bool: 端口是否可用
+        """
         # 检查是否被当前服务列表中的其他服务占用
         for service in self.services:
             if service == exclude_service:
                 continue
             try:
-                if int(service.port) == port and service.status == ServiceStatus.RUNNING:
+                if int(service.port) == port and service.status in [ServiceStatus.RUNNING, ServiceStatus.STARTING]:
                     return False
             except ValueError:
                 # 如果端口不是有效数字，跳过比较
@@ -1288,8 +1337,16 @@ class ServiceManager:
         except OSError:
             return False
     
-    def is_port_used_by_other_service(self, port, exclude_service=None):
-        """检查端口是否被其他服务使用"""
+    def is_port_used_by_service(self, port, exclude_service=None):
+        """检查端口是否被服务使用
+        
+        Args:
+            port (int): 要检查的端口号
+            exclude_service: 要排除的服务
+            
+        Returns:
+            tuple: (是否被占用, 占用服务名称)
+        """
         for service in self.services:
             if service == exclude_service:
                 continue
@@ -1545,8 +1602,8 @@ class DufsServiceDialog(QDialog):
             if self.edit_index is not None and i == self.edit_index:
                 continue
             
-            # 检查服务名称冲突
-            if existing_service.name == name:
+            # 检查服务名称冲突（大小写不敏感）
+            if existing_service.name.lower() == name.lower():
                 QMessageBox.critical(self, "错误", "服务名称已存在，请使用其他名称")
                 return
             
@@ -2843,7 +2900,7 @@ Categories=Utility;
         Returns:
             bool: 端口是否可用
         """
-        return self.manager.check_port_available(port, exclude_service)
+        return self.manager.is_port_available(port, exclude_service)
     
     def get_local_ip(self):
         """获取本地局域网IP地址
@@ -3847,7 +3904,7 @@ Categories=Utility;
                 continue
             
             # 检查端口是否可用，排除当前服务
-            if self.manager.check_port_available(try_port, exclude_service=service):
+            if self.manager.is_port_available(try_port, exclude_service=service):
                 available_port = try_port
                 break
         
@@ -3862,7 +3919,7 @@ Categories=Utility;
                     continue
                 
                 # 检查端口是否可用，排除当前服务
-                if self.manager.check_port_available(try_port, exclude_service=service):
+                if self.manager.is_port_available(try_port, exclude_service=service):
                     available_port = try_port
                     break
         
