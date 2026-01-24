@@ -14,8 +14,11 @@ import tarfile
 import re
 import winreg
 import webbrowser
+from typing import Optional
+
 import requests
 import psutil
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QLineEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
@@ -662,7 +665,7 @@ class DufsService:
         self.ngrok_mode = "authtoken"  # 使用方式：authtoken或api_key
         
         # 日志相关属性
-        self.gui_instance = None  # 用于访问GUI的append_log方法
+        self.gui_instance = None  # type: Optional[DufsMultiGUI]  # 用于访问GUI的append_log方法
         
         # ngrok监控相关属性
         self.ngrok_monitor_thread = None
@@ -720,7 +723,7 @@ class DufsService:
         
         try:
             # 下载ngrok
-            response = requests.get(download_url, stream=True)
+            response = requests.get(download_url, stream=True, timeout=30)
             response.raise_for_status()
             
             # 保存到临时文件
@@ -797,7 +800,7 @@ class DufsService:
     
     def start_ngrok(self):
         """启动ngrok内网穿透，将核心逻辑移至后台线程"""
-        self.append_log(f"开始启动ngrok内网穿透...")
+        self.append_log("开始启动ngrok内网穿透...")
         # 启动后台线程处理ngrok启动逻辑
         threading.Thread(target=self._start_ngrok_thread, daemon=True).start()
     
@@ -825,11 +828,11 @@ class DufsService:
             # 设置authtoken或API key
             if self.ngrok_mode == "authtoken":
                 if not current_authtoken:
-                    self.append_log(f"⚠️  未配置authtoken，ngrok可能无法正常工作")
-                    self.append_log(f"📌 请在设置中配置authtoken或设置环境变量 NGROK_AUTHTOKEN")
+                    self.append_log("⚠️  未配置authtoken，ngrok可能无法正常工作")
+                    self.append_log("📌 请在设置中配置authtoken或设置环境变量 NGROK_AUTHTOKEN")
             elif self.ngrok_mode == "api_key":
                 if not self.ngrok_api_key:
-                    self.append_log(f"⚠️  未配置API key，ngrok可能无法正常工作")
+                    self.append_log("⚠️  未配置API key，ngrok可能无法正常工作")
             
             # 添加http子命令和端口参数
             local_port = str(self.port)
@@ -876,8 +879,8 @@ class DufsService:
             
             # 检查self.ngrok_process是否为None，避免并发访问问题
             if self.ngrok_process is None:
-                self.append_log(f"✗ ngrok启动失败", error=True)
-                self.append_log(f"{'='*50}")
+                self.append_log("✗ ngrok启动失败", error=True)
+                self.append_log("="*50)
                 self._cleanup_ngrok_resources()
                 return
             
@@ -913,8 +916,8 @@ class DufsService:
                 # 检查是否是ERR_NGROK_334错误
                 all_output_str = stdout_output + stderr_output
                 if "ERR_NGROK_334" in all_output_str:
-                    self.append_log(f"✗ 遇到ERR_NGROK_334错误: 该endpoint已被其他ngrok进程使用")
-                    self.append_log(f"   请停止其他ngrok进程或使用不同的endpoint")
+                    self.append_log("✗ 遇到ERR_NGROK_334错误: 该endpoint已被其他ngrok进程使用")
+                    self.append_log("   请停止其他ngrok进程或使用不同的endpoint")
                     # 清理资源
                     self._cleanup_ngrok_resources()
                     # 通知UI更新
@@ -951,8 +954,8 @@ class DufsService:
                     # 检查是否是ERR_NGROK_334错误
                     all_output_str = stdout_output + stderr_output
                     if "ERR_NGROK_334" in all_output_str:
-                        self.append_log(f"✗ 遇到ERR_NGROK_334错误: 该endpoint已被其他ngrok进程使用")
-                        self.append_log(f"   请停止其他ngrok进程或使用不同的endpoint")
+                        self.append_log("✗ 遇到ERR_NGROK_334错误: 该endpoint已被其他ngrok进程使用")
+                        self.append_log("   请停止其他ngrok进程或使用不同的endpoint")
                         # 清理资源
                         self._cleanup_ngrok_resources()
                         return
@@ -974,16 +977,16 @@ class DufsService:
                 self.public_access_status = "running"
                 # 重置重启计数
                 self.ngrok_restart_count = 0
-                self.append_log(f"✓ ngrok已成功启动！")
+                self.append_log("✓ ngrok已成功启动！")
                 self.append_log(f"✓ 公网URL: {self.public_url}")
-                self.append_log(f"{'='*50}")
+                self.append_log("="*50)
                 # 通知UI更新状态
                 if self.gui_instance:
                     self.gui_instance.status_updated.emit()
                 return
             
             # 进程还在运行但没有获取到URL，读取所有输出进行诊断
-            self.append_log(f"✗ 未能获取ngrok公网URL", error=True)
+            self.append_log("✗ 未能获取ngrok公网URL", error=True)
             
             # 等待输出线程读取更多数据
             time.sleep(1)
@@ -998,44 +1001,44 @@ class DufsService:
                     remaining_stdout = self.ngrok_process.stdout.read()
                     if remaining_stdout:
                         stdout_output += "\n" + remaining_stdout
-                except:
-                    pass
+                except Exception as e:
+                    self.append_log(f"读取ngrok标准输出时发生错误: {str(e)}", error=True)
                 
                 try:
                     remaining_stderr = self.ngrok_process.stderr.read()
                     if remaining_stderr:
                         stderr_output += "\n" + remaining_stderr
-                except:
-                    pass
+                except Exception as e:
+                    self.append_log(f"读取ngrok标准错误时发生错误: {str(e)}", error=True)
             
-            self.append_log(f"{'='*50}")
+            self.append_log("="*50)
             self.append_log(f"命令: {' '.join(command)}")
             self.append_log(f"PID: {self.ngrok_process.pid}")
             self.append_log(f"进程状态: {'运行中' if self.ngrok_process.poll() is None else '已退出'}")
-            self.append_log(f"\n=== 标准输出 ===")
+            self.append_log("\n=== 标准输出 ===")
             self.append_log(stdout_output)
-            self.append_log(f"\n=== 错误输出 ===")
+            self.append_log("\n=== 错误输出 ===")
             self.append_log(stderr_output)
-            self.append_log(f"{'='*50}")
+            self.append_log("="*50)
             
             # 检查是否是authtoken问题
             if "authtoken" in stderr_output.lower() or "unauthorized" in stderr_output.lower():
-                self.append_log(f"\n❌ 问题诊断: ngrok需要有效的authtoken才能使用")
-                self.append_log(f"   请按照以下步骤配置:")
-                self.append_log(f"   1. 访问 https://dashboard.ngrok.com/signup 注册账号")
-                self.append_log(f"   2. 登录后，访问 https://dashboard.ngrok.com/get-started/your-authtoken 获取authtoken")
-                self.append_log(f"   3. 在命令行中运行: ngrok config add-authtoken <你的authtoken>")
+                self.append_log("\n❌ 问题诊断: ngrok需要有效的authtoken才能使用")
+                self.append_log("   请按照以下步骤配置:")
+                self.append_log("   1. 访问 https://dashboard.ngrok.com/signup 注册账号")
+                self.append_log("   2. 登录后，访问 https://dashboard.ngrok.com/get-started/your-authtoken 获取authtoken")
+                self.append_log("   3. 在命令行中运行: ngrok config add-authtoken <你的authtoken>")
             elif "already online" in stderr_output.lower() or "ERR_NGROK_334" in stderr_output:
-                self.append_log(f"\n❌ 问题诊断: 端口已被其他ngrok进程占用")
-                self.append_log(f"   请先停止之前的ngrok进程或使用不同的端口")
+                self.append_log("\n❌ 问题诊断: 端口已被其他ngrok进程占用")
+                self.append_log("   请先停止之前的ngrok进程或使用不同的端口")
             elif "failed to connect" in stderr_output.lower() or "connection refused" in stderr_output.lower():
-                self.append_log(f"\n❌ 问题诊断: 无法连接到ngrok服务器")
-                self.append_log(f"   请检查网络连接或防火墙设置")
+                self.append_log("\n❌ 问题诊断: 无法连接到ngrok服务器")
+                self.append_log("   请检查网络连接或防火墙设置")
             elif "listen tcp" in stderr_output.lower() and "bind: address already in use" in stderr_output.lower():
-                self.append_log(f"\n❌ 问题诊断: 本地端口被占用")
-                self.append_log(f"   请使用不同的本地端口或停止占用该端口的进程")
+                self.append_log("\n❌ 问题诊断: 本地端口被占用")
+                self.append_log("   请使用不同的本地端口或停止占用该端口的进程")
             else:
-                self.append_log(f"\n❌ 问题诊断: 无法确定具体问题，请查看上面的详细输出")
+                self.append_log("\n❌ 问题诊断: 无法确定具体问题，请查看上面的详细输出")
             
             # 清理资源
             self.append_log("\n15. 清理ngrok资源...")
@@ -1047,7 +1050,8 @@ class DufsService:
                     self.append_log(f"   ✓ 已发送终止信号到ngrok进程 {self.ngrok_process.pid}")
                     self.ngrok_process.wait(timeout=2)
                     self.append_log("   ✓ ngrok进程已终止")
-                except:
+                except (subprocess.TimeoutExpired, OSError, ValueError, AttributeError) as e:
+                    self.append_log(f"   ⚠ 正常终止ngrok进程失败: {str(e)}")
                     try:
                         self.ngrok_process.kill()
                         self.append_log("   ✓ 已强制终止ngrok进程")
@@ -1144,11 +1148,12 @@ class DufsService:
             try:
                 self.ngrok_process.terminate()
                 self.ngrok_process.wait(timeout=2)
-            except:
+            except (subprocess.TimeoutExpired, OSError, ValueError, AttributeError) as e:
+                self.append_log(f"正常终止ngrok进程失败，尝试强制终止: {str(e)}")
                 try:
                     self.ngrok_process.kill()
-                except:
-                    pass
+                except (OSError, ValueError, AttributeError) as e:
+                    self.append_log(f"强制终止ngrok进程失败: {str(e)}", error=True)
             self.ngrok_process = None
         
         # 停止旧的监控线程
