@@ -516,9 +516,11 @@ class LogWindow(QMainWindow):
             new_logs = {}
             for i in range(self.log_tabs.count()):
                 if i < index:
-                    new_logs[i] = self.original_logs[i]
+                    if i in self.original_logs:
+                        new_logs[i] = self.original_logs[i]
                 elif i > index:
-                    new_logs[i-1] = self.original_logs[i]
+                    if i in self.original_logs:
+                        new_logs[i-1] = self.original_logs[i]
             self.original_logs = new_logs
     
     def _on_search_text_changed(self, text):
@@ -723,24 +725,19 @@ class LogManager:
                     self._flush_log_buffer(service)
                 service.log_buffer.append((message, error))
             
-            # 如果定时器未激活，启动定时器
-            if service.log_timer is None:
-                service.log_timer = QTimer(self.main_window)  # 添加main_window作为父对象，确保在主线程中创建
-                service.log_timer.timeout.connect(lambda s=service: self._flush_log_buffer(s))
-            
-            if not service.log_timer.isActive():
-                # 根据缓冲区大小动态调整刷新间隔
-                buffer_size = len(service.log_buffer)
-                if buffer_size > AppConstants.MAX_LOG_BUFFER_SIZE * 0.8:
-                    # 缓冲区接近满，使用较短的刷新间隔
-                    interval = AppConstants.DEFAULT_LOG_REFRESH_INTERVAL
-                elif buffer_size > AppConstants.MAX_LOG_BUFFER_SIZE * 0.5:
-                    # 缓冲区中等，使用默认刷新间隔
-                    interval = AppConstants.DEFAULT_LOG_REFRESH_INTERVAL * 2
-                else:
-                    # 缓冲区较小，使用较长的刷新间隔
-                    interval = AppConstants.MAX_LOG_REFRESH_INTERVAL
-                service.log_timer.start(interval)  # 动态调整刷新间隔，降低UI更新频率
+            # 使用QTimer.singleShot确保在主线程中执行日志刷新
+            # 根据缓冲区大小动态调整刷新间隔
+            buffer_size = len(service.log_buffer)
+            if buffer_size > AppConstants.MAX_LOG_BUFFER_SIZE * 0.8:
+                # 缓冲区接近满，使用较短的刷新间隔
+                interval = AppConstants.DEFAULT_LOG_REFRESH_INTERVAL
+            elif buffer_size > AppConstants.MAX_LOG_BUFFER_SIZE * 0.5:
+                # 缓冲区中等，使用默认刷新间隔
+                interval = AppConstants.DEFAULT_LOG_REFRESH_INTERVAL * 2
+            else:
+                # 缓冲区较小，使用较长的刷新间隔
+                interval = AppConstants.MAX_LOG_REFRESH_INTERVAL
+            QTimer.singleShot(interval, lambda s=service: self._flush_log_buffer(s))
         else:
             # 如果没有指定服务或服务没有日志控件，暂时不处理
             pass
@@ -749,10 +746,6 @@ class LogManager:
         """刷新日志缓冲区到UI"""
         if not service or not service.log_widget:
             return
-        
-        # 停止定时器
-        if service.log_timer and service.log_timer.isActive():
-            service.log_timer.stop()
         
         # 批量处理日志
         if service.log_buffer:
@@ -837,8 +830,7 @@ class DufsService:
         self.public_url = ""
         self.public_access_status = "stopped"  # stopped, starting, running, stopping
         self.ngrok_authtoken = ""  # 用户配置的ngrok authtoken
-        self.ngrok_api_key = ""  # 用户配置的ngrok API key
-        self.ngrok_mode = "authtoken"  # 使用方式：authtoken或api_key
+        self.ngrok_mode = "authtoken"  # 使用方式：authtoken
         
         # 日志相关属性
         self.gui_instance = None  # type: Optional[DufsMultiGUI]  # 用于访问GUI的append_log方法
@@ -997,19 +989,6 @@ class DufsService:
             ]
             
             # 已经在command中添加了authtoken参数，这里不再重复添加
-            # 只处理API key模式
-            if self.ngrok_mode == "api_key":
-                if not self.ngrok_api_key:
-                    self.append_log("⚠️  未配置API key，ngrok可能无法正常工作")
-                else:
-                    # 替换命令中的authtoken参数为API key参数
-                    # 移除authtoken参数
-                    if "--authtoken" in command:
-                        auth_index = command.index("--authtoken")
-                        # 移除--authtoken和后面的值
-                        del command[auth_index:auth_index+2]
-                    # 添加API key参数
-                    command.extend(["--api-key", self.ngrok_api_key])
             
             # 添加配置文件参数，确保每个服务使用独立配置
             
@@ -1865,6 +1844,11 @@ class DufsServiceDialog(QDialog):
         service.allow_search = True
         service.allow_archive = True
         
+        # 复制原服务的ngrok配置（如果是编辑服务）
+        if self.service:
+            service.ngrok_authtoken = self.service.ngrok_authtoken
+            service.ngrok_mode = self.service.ngrok_mode
+        
         # 认证规则
         username = self.username_edit.text().strip()
         password = self.password_edit.text().strip()
@@ -1918,11 +1902,8 @@ class DufsMultiGUI(QMainWindow):
         self.log_window = None
         
         # 初始化UI属性
-        self.ngrok_mode_combo = None
         self.authtoken_widget = None
         self.authtoken_edit = None
-        self.api_key_widget = None
-        self.api_key_edit = None
         self.auto_start_checkbox = None
         self.log_window_btn = None
         self.service_tree = None
@@ -2043,13 +2024,9 @@ class DufsMultiGUI(QMainWindow):
             # 添加日志到缓冲区
             service.log_buffer.append((message, error))
             
-            # 确保日志定时器存在且正在运行
-            if service.log_timer is None:
-                service.log_timer = QTimer(self)  # 添加self作为父对象，确保在主线程中创建
-                service.log_timer.timeout.connect(lambda s=service: self._flush_log_buffer(s))
-                service.log_timer.start(50)  # 50ms后刷新日志，降低UI更新频率
-            elif not service.log_timer.isActive():
-                service.log_timer.start(50)  # 50ms后刷新日志，降低UI更新频率
+            # 使用QTimer.singleShot确保在主线程中执行日志刷新
+            # 50ms延迟，避免频繁更新UI
+            QTimer.singleShot(50, lambda s=service: self._flush_log_buffer(s))
         else:
             # 如果没有指定服务或服务没有日志控件，暂时不处理
             pass
@@ -2131,9 +2108,8 @@ class DufsMultiGUI(QMainWindow):
         self._add_title_bar(main_layout)
         self._add_button_group(main_layout)
         
-        # 直接添加服务列表、ngrok配置和访问地址到主布局
+        # 直接添加服务列表、访问地址和公网访问到主布局
         self._add_service_list(main_layout)
-        self._add_ngrok_config(main_layout)
         self._add_access_address(main_layout)
         self._add_public_access_address(main_layout)
         
@@ -2157,80 +2133,6 @@ class DufsMultiGUI(QMainWindow):
         # 初始化系统托盘
         self.init_system_tray()
         
-        # 显示窗口
-        self.setWindowFlags(self.windowFlags() | Qt.WindowMinimizeButtonHint)
-        self.show()
-    
-    def _add_ngrok_config(self, main_layout):
-        """添加ngrok配置UI"""
-        ngrok_group = QGroupBox("ngrok配置")
-        ngrok_layout = QVBoxLayout(ngrok_group)
-        ngrok_layout.setContentsMargins(15, 15, 15, 15)
-        ngrok_layout.setSpacing(10)
-        
-        # 选择ngrok使用方式
-        mode_layout = QHBoxLayout()
-        mode_layout.addWidget(QLabel("使用方式:"))
-        
-        self.ngrok_mode_combo = QComboBox()
-        self.ngrok_mode_combo.addItems(["authtoken", "api_key"])
-        self.ngrok_mode_combo.currentTextChanged.connect(self.on_ngrok_mode_changed)
-        mode_layout.addWidget(self.ngrok_mode_combo)
-        mode_layout.addStretch()
-        ngrok_layout.addLayout(mode_layout)
-        
-        # authtoken配置 - 使用QWidget容器包装
-        self.authtoken_widget = QWidget()
-        authtoken_layout = QHBoxLayout(self.authtoken_widget)
-        authtoken_layout.setContentsMargins(0, 0, 0, 0)
-        authtoken_layout.addWidget(QLabel("Authtoken:"))
-        
-        self.authtoken_edit = QLineEdit()
-        self.authtoken_edit.setPlaceholderText("请输入ngrok authtoken")
-        self.authtoken_edit.setEchoMode(QLineEdit.Password)
-        authtoken_layout.addWidget(self.authtoken_edit)
-        
-        authtoken_save_btn = QPushButton("保存Authtoken")
-        authtoken_save_btn.clicked.connect(self.save_ngrok_authtoken)
-        authtoken_layout.addWidget(authtoken_save_btn)
-        ngrok_layout.addWidget(self.authtoken_widget)
-        
-        # API key配置 - 使用QWidget容器包装（默认隐藏）
-        self.api_key_widget = QWidget()
-        api_key_layout = QHBoxLayout(self.api_key_widget)
-        api_key_layout.setContentsMargins(0, 0, 0, 0)
-        api_key_layout.addWidget(QLabel("API Key:"))
-        
-        self.api_key_edit = QLineEdit()
-        self.api_key_edit.setPlaceholderText("请输入ngrok API key")
-        self.api_key_edit.setEchoMode(QLineEdit.Password)
-        api_key_layout.addWidget(self.api_key_edit)
-        
-        api_key_save_btn = QPushButton("保存API Key")
-        api_key_save_btn.clicked.connect(self.save_ngrok_api_key)
-        api_key_layout.addWidget(api_key_save_btn)
-        ngrok_layout.addWidget(self.api_key_widget)
-        
-        # 默认显示authtoken配置，隐藏API key配置
-        self.api_key_widget.setVisible(False)
-        
-        # 添加使用提示
-        tip_label = QLabel("提示：免费版ngrok每次重启URL会变化，建议使用Dufs内置认证保护共享文件夹")
-        tip_label.setStyleSheet("color: #7F8C8D; font-size: 11px; font-style: italic;")
-        ngrok_layout.addWidget(tip_label)
-        
-        main_layout.addWidget(ngrok_group)
-    
-    def on_ngrok_mode_changed(self, mode):
-        """切换ngrok使用方式"""
-        # 显示对应的配置项
-        if mode == "authtoken":
-            self.authtoken_widget.setVisible(True)
-            self.api_key_widget.setVisible(False)
-        else:
-            self.authtoken_widget.setVisible(False)
-            self.api_key_widget.setVisible(True)
-    
     def save_ngrok_authtoken(self):
         """保存ngrok authtoken到当前选中的服务"""
         authtoken = self.authtoken_edit.text().strip()
@@ -2256,51 +2158,13 @@ class DufsMultiGUI(QMainWindow):
             service.ngrok_authtoken = authtoken
             service.ngrok_mode = "authtoken"
             
-            # 使用ngrok命令保存authtoken到配置文件
-            result = subprocess.run(
-                ["ngrok", "config", "add-authtoken", authtoken],
-                capture_output=True,
-                text=True
-            )
-            
-            if result.returncode == 0:
-                QMessageBox.information(self, "成功", f"authtoken已保存到服务 {service.name}")
-                self.authtoken_edit.clear()
-            else:
-                QMessageBox.warning(self, "失败", f"保存authtoken到配置文件失败: {result.stderr}")
+            # 保存配置到文件
+            self.save_config()
+            QMessageBox.information(self, "成功", f"authtoken已保存到服务 {service.name}")
+            self.authtoken_edit.clear()
         except (subprocess.SubprocessError, OSError, ValueError) as e:
             QMessageBox.warning(self, "失败", f"保存authtoken失败: {str(e)}")
-    
-    def save_ngrok_api_key(self):
-        """保存ngrok API key到当前选中的服务"""
-        api_key = self.api_key_edit.text().strip()
-        if not api_key:
-            QMessageBox.warning(self, "提示", "请输入API key")
-            return
-        
-        try:
-            # 获取当前选中的服务
-            selected_items = self.service_tree.selectedItems()
-            if not selected_items:
-                QMessageBox.warning(self, "提示", "请先选择一个服务")
-                return
-            
-            selected_item = selected_items[0]
-            index = selected_item.data(0, Qt.UserRole)
-            if index is None:
-                QMessageBox.warning(self, "提示", "无效的服务索引")
-                return
-            
-            # 只保存API key到当前选中的服务
-            service = self.manager.services[index]
-            service.ngrok_api_key = api_key
-            service.ngrok_mode = "api_key"
-            
-            QMessageBox.information(self, "成功", f"API key已保存到服务 {service.name}")
-            self.api_key_edit.clear()
-        except (AttributeError, TypeError) as e:
-            QMessageBox.warning(self, "失败", f"保存API key失败: {str(e)}")
-    
+
     def save_config(self):
         """保存服务配置到JSON文件"""
         try:
@@ -2326,7 +2190,6 @@ class DufsMultiGUI(QMainWindow):
                     "allow_archive": service.allow_archive,
                     "auth_rules": service.auth_rules,
                     "ngrok_authtoken": service.ngrok_authtoken,
-                    "ngrok_api_key": service.ngrok_api_key,
                     "ngrok_mode": service.ngrok_mode
                 }
                 config_data["services"].append(service_dict)
@@ -2391,7 +2254,6 @@ class DufsMultiGUI(QMainWindow):
                 
                 # 设置ngrok相关配置
                 service.ngrok_authtoken = service_dict.get("ngrok_authtoken", "")
-                service.ngrok_api_key = service_dict.get("ngrok_api_key", "")
                 service.ngrok_mode = service_dict.get("ngrok_mode", "authtoken")
                 
                 # 设置gui_instance属性，以便服务可以访问GUI的日志功能
@@ -2754,10 +2616,26 @@ Categories=Utility;
     
     def _add_public_access_address(self, main_layout):
         """添加公网访问地址UI，优化用户体验"""
-        public_group = QGroupBox("公网访问（免费版ngrok）")
+        public_group = QGroupBox("公网访问")
         public_layout = QVBoxLayout()
         public_layout.setContentsMargins(15, 15, 15, 15)
         public_layout.setSpacing(10)
+        
+        # authtoken配置 - 使用QWidget容器包装
+        self.authtoken_widget = QWidget()
+        authtoken_layout = QHBoxLayout(self.authtoken_widget)
+        authtoken_layout.setContentsMargins(0, 0, 0, 0)
+        authtoken_layout.addWidget(QLabel("Authtoken:"))
+        
+        self.authtoken_edit = QLineEdit()
+        self.authtoken_edit.setPlaceholderText("请输入ngrok authtoken")
+        self.authtoken_edit.setEchoMode(QLineEdit.Password)
+        authtoken_layout.addWidget(self.authtoken_edit)
+        
+        authtoken_save_btn = QPushButton("保存Authtoken")
+        authtoken_save_btn.clicked.connect(self.save_ngrok_authtoken)
+        authtoken_layout.addWidget(authtoken_save_btn)
+        public_layout.addWidget(self.authtoken_widget)
         
         # 地址显示行
         addr_layout = QHBoxLayout()
@@ -3462,12 +3340,19 @@ Categories=Utility;
             selected_item = selected_items[0]
             index = selected_item.data(0, Qt.UserRole)
             if index is not None:
-                self.refresh_address(index)
-                self.update_public_access_ui(self.manager.services[index])
+                service = self.manager.services[index]
+                if hasattr(self, 'refresh_address'):
+                    self.refresh_address(index)
+                self.update_public_access_ui(service)
+                # 更新ngrok配置面板，显示当前选中服务的配置
+                if hasattr(self, 'authtoken_edit'):
+                    self.authtoken_edit.setText(service.ngrok_authtoken)
         else:
             # 没有选择服务，清空访问地址和公网访问UI
             self.addr_edit.setText("")
             self.update_public_access_ui(None)
+            if hasattr(self, 'authtoken_edit'):
+                self.authtoken_edit.setText("")
     
     def show_service_details(self, item, column):
         """显示服务详情抽屉"""
@@ -3517,12 +3402,8 @@ Categories=Utility;
         
         # ngrok配置信息
         details_text += f"ngrok模式: {service.ngrok_mode}\n"
-        if service.ngrok_mode == "authtoken":
-            authtoken_display = f"{service.ngrok_authtoken[:10]}..." if service.ngrok_authtoken else "未配置"
-            details_text += f"ngrok Authtoken: {authtoken_display}\n"
-        else:
-            api_key_display = f"{service.ngrok_api_key[:10]}..." if service.ngrok_api_key else "未配置"
-            details_text += f"ngrok API Key: {api_key_display}\n"
+        authtoken_display = f"{service.ngrok_authtoken[:10]}..." if service.ngrok_authtoken else "未配置"
+        details_text += f"ngrok Authtoken: {authtoken_display}\n"
         
         QMessageBox.information(self, f"服务详情 - {service.name}", details_text)
     
@@ -3549,7 +3430,8 @@ Categories=Utility;
         service = self.manager.services[index]
         
         # 更新访问地址
-        self.refresh_address(index)
+        if hasattr(self, 'refresh_address'):
+            self.refresh_address(index)
         
         # 更新公网访问UI
         self.update_public_access_ui(service)
@@ -3563,18 +3445,8 @@ Categories=Utility;
                     break
         
         # 更新ngrok配置面板，显示当前选中服务的配置
-        if hasattr(self, 'ngrok_mode_combo'):
-            # 更新ngrok模式
-            self.ngrok_mode_combo.setCurrentText(service.ngrok_mode)
-            
-            # 更新authtoken和API key输入框
-            if hasattr(self, 'authtoken_edit'):
-                self.authtoken_edit.setText(service.ngrok_authtoken)
-            if hasattr(self, 'api_key_edit'):
-                self.api_key_edit.setText(service.ngrok_api_key)
-            
-            # 更新可见性
-            self.on_ngrok_mode_changed(service.ngrok_mode)
+        if hasattr(self, 'authtoken_edit'):
+            self.authtoken_edit.setText(service.ngrok_authtoken)
     
     def refresh_address(self, index):
         """刷新访问地址"""
@@ -3612,7 +3484,6 @@ Categories=Utility;
             if service.ngrok_mode == "authtoken":
                 # 检查authtoken是否已配置
                 if service.ngrok_authtoken or os.environ.get("NGROK_AUTHTOKEN"):
-                    authtoken_configured = True
                     current_authtoken = service.ngrok_authtoken or os.environ.get("NGROK_AUTHTOKEN")
                     self.append_log(f"使用authtoken: {current_authtoken[:10]}...{current_authtoken[-5:]}", service_name=service.name)
                 else:
@@ -3642,37 +3513,6 @@ Categories=Utility;
                         # 终止启动公网服务
                         self.append_log(f"用户取消了公网访问启动", service_name=service.name)
                         return
-            elif service.ngrok_mode == "api_key":
-                # 检查API key是否已配置
-                if service.ngrok_api_key:
-                    authtoken_configured = True
-                    self.append_log(f"使用API key模式", service_name=service.name)
-                else:
-                    # 未配置API key，显示弹窗提醒
-                    self.append_log(f"未配置ngrok API key，需要用户配置", error=True, service_name=service.name)
-                    msg_box = QMessageBox()
-                    msg_box.setIcon(QMessageBox.Warning)
-                    msg_box.setWindowTitle("提示")
-                    msg_box.setText("未配置ngrok API key")
-                    msg_box.setInformativeText(
-                        "ngrok API key用于调用ngrok REST API，请按照以下步骤配置：\n\n" \
-                        "1. 访问 https://dashboard.ngrok.com/api-keys 创建API key\n" \
-                        "2. 在程序中保存API key"
-                    )
-                    msg_box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-                    msg_box.setDefaultButton(QMessageBox.Ok)
-                    
-                    # 显示弹窗
-                    result = msg_box.exec_()
-                    if result == QMessageBox.Ok:
-                        # 打开ngrok官网地址
-                        self.append_log(f"用户选择前往ngrok官网配置API key", service_name=service.name)
-                        import webbrowser
-                        webbrowser.open("https://dashboard.ngrok.com/api-keys")
-                    elif result == QMessageBox.Cancel:
-                        # 终止启动公网服务
-                        self.append_log(f"用户取消了公网访问启动", service_name=service.name)
-                        return
             
             # 设置公网访问状态为启动中
             service.public_access_status = "starting"
@@ -3683,22 +3523,20 @@ Categories=Utility;
                 try:
                     # 使用QTimer确保在主线程中调用UI方法
                     QTimer.singleShot(0, lambda: self.append_log(f"正在为服务 {service.name} 启动ngrok...", service_name=service.name))
-                    # 启动ngrok
-                    result = service.start_ngrok()
-                    if isinstance(result, str):
-                        if result.startswith("http"):
-                            # 返回的是公网URL
-                            QTimer.singleShot(0, lambda: self.append_log(f"ngrok已成功启动，公网URL: {result}", service_name=service.name))
-                            QTimer.singleShot(0, lambda: self.append_log(f"服务 {service.name} 公网访问已启用", service_name=service.name))
-                        else:
-                            # 返回的是错误信息
-                            error_msg = f"ngrok启动失败: {result}"
-                            QTimer.singleShot(0, lambda: self.append_log(error_msg, error=True, service_name=service.name))
-                            QTimer.singleShot(0, lambda: self.append_log(f"服务 {service.name} 公网访问启动失败", error=True, service_name=service.name))
-                            QTimer.singleShot(0, lambda: QMessageBox.critical(self, "ngrok启动失败", error_msg))
-                    else:
-                        QTimer.singleShot(0, lambda: self.append_log(f"ngrok启动失败，无法获取公网URL", error=True, service_name=service.name))
-                        QTimer.singleShot(0, lambda: self.append_log(f"服务 {service.name} 公网访问启动失败", error=True, service_name=service.name))
+                    # 启动ngrok - 现在start_ngrok返回None，核心逻辑在后台线程中执行
+                    service.start_ngrok()
+                    # 不需要处理返回值，因为ngrok的启动状态和URL会通过status_updated信号通知UI
+                    # 等待一下，让ngrok有时间启动
+                    time.sleep(2)
+                    # 检查ngrok是否成功启动
+                    if service.public_url and service.public_url.startswith("http"):
+                        # 公网URL已获取成功
+                        QTimer.singleShot(0, lambda: self.append_log(f"ngrok已成功启动，公网URL: {service.public_url}", service_name=service.name))
+                        QTimer.singleShot(0, lambda: self.append_log(f"服务 {service.name} 公网访问已启用", service_name=service.name))
+                    elif service.public_access_status == "running":
+                        # 状态为running但还没获取到URL，继续等待
+                        QTimer.singleShot(0, lambda: self.append_log(f"ngrok已启动，正在获取公网URL...", service_name=service.name))
+                        # 不记录失败，因为URL会通过其他途径更新
                 except (OSError, ValueError, subprocess.SubprocessError) as e:
                     error_msg = f"启动ngrok失败: {str(e)}"
                     QTimer.singleShot(0, lambda: self.append_log(error_msg, error=True, service_name=service.name))
@@ -3724,6 +3562,7 @@ Categories=Utility;
             QTimer.singleShot(0, lambda: self.append_log(f"ngrok已成功停止", service_name=service.name))
             QTimer.singleShot(0, lambda: self.append_log(f"服务 {service.name} 公网访问已停止", service_name=service.name))
             QTimer.singleShot(0, self.update_service_list)
+            QTimer.singleShot(0, lambda: self.update_public_access_ui(service))
     
     def _create_service_tree_item(self, service, index):
         """创建服务树项"""
@@ -3813,13 +3652,13 @@ Categories=Utility;
         # 显示带图标的状态
         status_with_icon = f"{status_emoji} {service.status}"
         
-        # 创建树项，公网访问列根据服务状态显示不同内容
+        # 创建树项，公网访问列根据服务状态显示不同内容（仅显示状态，不显示完整URL）
         public_access_text = ""
         if service.status != ServiceStatus.RUNNING:
             public_access_text = "请先启动服务"
         elif service.public_access_status == "running":
-            # 显示完整的公网URL
-            public_access_text = service.public_url
+            # 只显示状态，不显示完整URL
+            public_access_text = "运行中"
         elif service.public_access_status == "starting":
             public_access_text = "启动中..."
         elif service.public_access_status == "stopping":
@@ -3914,7 +3753,9 @@ Categories=Utility;
             selected_item = selected_items[0]
             index = selected_item.data(0, Qt.UserRole)
             if index is not None:
-                self.refresh_address(index)
+                if hasattr(self, 'refresh_address'):
+                    self.refresh_address(index)
+                self.update_public_access_ui(self.manager.services[index])
     
     def add_service(self):
         """添加新服务"""
@@ -4861,10 +4702,7 @@ Categories=Utility;
             service.log_thread_terminate = True
             # 清空日志缓冲区，防止下次启动时续接上一次的日志
             service.log_buffer.clear()
-            # 停止日志定时器（如果存在）
-            if service.log_timer:
-                service.log_timer.stop()
-                service.log_timer = None
+            # 日志定时器已移除，不再需要清理
         
         # 关闭服务的日志Tab
         if service.log_widget:
@@ -4904,50 +4742,27 @@ Categories=Utility;
     def show_help(self):
         """显示帮助信息"""
         help_text = """
-        帮助 - 使用说明
-
-        欢迎使用 Dufs 服务管理工具！以下是本工具的使用指南，帮助你快速上手并配置和管理服务。
-
-        1. 添加服务
-
-        步骤 1：点击界面中的“添加服务”按钮。
-
-        步骤 2：在弹出的对话框中填写服务信息：
-
+欢迎使用 Dufs 服务管理工具！
+1. 添加服务
+    步骤 1：点击界面中的“添加服务”按钮。
+    步骤 2：在弹出的对话框中填写服务信息：
         服务名称：输入一个唯一的服务名称。
-
         服务路径：选择一个文件夹作为服务的根路径，所有通过此服务提供的文件都将在该路径下。
-
         端口号：为服务分配一个端口。确保所选端口未被其他服务占用。
-
-        步骤 3：点击“确定”按钮，系统将检查端口是否可用并启动服务。
-
-        2. 启动 ngrok
-
+    步骤 3：点击“确定”按钮，系统将检查端口是否可用并启动服务。
+2. 启动 ngrok
         每个服务支持通过 ngrok 进行内网穿透，使服务可以从外网访问。
-
-        步骤 1：在服务配置界面，填写你从 ngrok 获取的 authtoken（也可以使用 API key）。
-
-        步骤 2：点击“启动 ngrok”按钮。系统会自动启动一个独立的 ngrok 隧道，并为该服务分配一个公网地址。
-
+    步骤 1：在服务配置界面，填写你从 ngrok 获取的 authtoken（也可以使用 API key）。
+    步骤 2：点击“启动 ngrok”按钮。系统会自动启动一个独立的 ngrok 隧道，并为该服务分配一个公网地址。
         注意：每个服务需要使用独立的 ngrok 配置，确保使用不同的 authtoken 或 API key 来避免冲突。
-        常见问题解答 (FAQ)
-
-        如何获取 ngrok 的 authtoken？
-
-        访问 ngrok 官网
-        ，注册账号并获取 authtoken。登录后，点击“Dashboard”获取个人 authtoken。
-
-        ngrok 启动失败怎么办？
-
+常见问题解答 (FAQ)
+    如何获取 ngrok 的 authtoken？
+        访问 ngrok 官网，注册账号并获取 authtoken。登录后，点击“Dashboard”获取个人 authtoken。
+    ngrok 启动失败怎么办？
         请检查是否正确配置了 authtoken。如果提示端口已占用，请尝试使用不同的端口，或停止其他 ngrok 进程。
-
-        如何停止一个服务？
-
+    如何停止一个服务？
         进入服务管理界面，点击服务名称旁的“停止”按钮，即可停止该服务。
-
-        服务日志如何查看？
-
+    服务日志如何查看？
         每个服务都有独立的日志窗口，点击服务旁的“查看日志”按钮，实时查看服务状态。
         """
         
