@@ -62,7 +62,7 @@ class AppConstants:
     PORT_TRY_LIMIT = 100
     PORT_TRY_LIMIT_BACKUP = 50
     BACKUP_START_PORT = 8000
-    SERVICE_START_WAIT_SECONDS = 0.5  # 减少启动检查延迟时间，从2秒改为0.5秒
+    SERVICE_START_WAIT_SECONDS = 0.5  
     PROCESS_TERMINATE_TIMEOUT = 2
     
     # 日志配置常量
@@ -983,20 +983,22 @@ class DufsService:
                 "--authtoken", current_authtoken,  # authtoken参数放在前面
                 f"--metadata", f"service={self.name}",  # 服务元数据
                 f"--region", selected_region  # 不同服务使用不同区域，避免端点冲突
-                # 移除--api参数，ngrok v3不支持
-                # 移除--pooling-enabled参数，因为我们希望每个服务获得独立的端点
-                # 移除--log参数，不生成日志文件
+
             ]
-            
-            # 已经在command中添加了authtoken参数，这里不再重复添加
-            
-            # 添加配置文件参数，确保每个服务使用独立配置
-            
-            # 不使用配置文件，ngrok v3直接通过命令行参数配置
-            # 已经在命令开头添加了http和端口参数，无需重复添加
-            
-            # 添加调试信息，显示完整的命令行
-            self.append_log(f"ngrok完整命令: {' '.join(command)}")
+
+            # 过滤掉authtoken参数以保护敏感信息
+            filtered_command = []
+            skip_next = False
+            for arg in command:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if arg == '--authtoken':
+                    filtered_command.append('--authtoken ***')
+                    skip_next = True
+                else:
+                    filtered_command.append(arg)
+            self.append_log(f"ngrok完整命令: {' '.join(filtered_command)}")
             
             
             
@@ -1337,43 +1339,7 @@ class DufsService:
         self.append_log("正在获取ngrok公网URL...")
         local_port = str(self.port)
 
-        # 方法1: 尝试从进程输出获取URL（与测试脚本保持一致）
-        self.append_log("尝试从ngrok进程输出中获取URL...")
-        import select
-        import sys
-        
-        for i in range(20):  # 最多尝试20次，与测试脚本保持一致
-            try:
-                # 检查进程是否还在运行
-                if process.poll() is not None:
-                    self.append_log("ngrok进程已退出，停止从输出获取URL")
-                    break
-                    
-                # 使用select实现超时读取，避免无限阻塞
-                # 设置0.5秒超时，避免一直等待
-                rlist, _, _ = select.select([process.stdout], [], [], 0.5)
-                if rlist:
-                    line = process.stdout.readline(1024)
-                    if line:
-                        line = line.strip()
-                        if line:
-                            self.append_log(f"ngrok输出: {line}")
-                            # 查找Forwarding行，获取公网URL
-                            if "Forwarding" in line:
-                                # 格式: Forwarding                    https://abc123.ngrok-free.app -> http://localhost:8000
-                                parts = line.split(" -> ")
-                                if len(parts) == 2:
-                                    public_url = parts[0].strip()
-                                    self.append_log(f"匹配到公网URL: {public_url}")
-                                    return public_url
-            except Exception as e:
-                self.append_log(f"读取ngrok输出失败: {str(e)}", error=True)
-                break
-            time.sleep(1)  # 等待1秒后重试，与测试脚本保持一致
-
-        self.append_log("未能从ngrok输出获取公网URL")
-
-        # 方法2: 尝试使用API获取URL（与测试脚本保持一致）
+        # 使用ngrok本地API获取URL
         self.append_log("尝试使用ngrok本地API获取URL...")
         # 为每个服务分配绝对不同的API端口，便于获取对应服务的URL
         primary_api_port = 4050 + int(local_port[-1:])  # 与命令中分配的API端口保持一致
@@ -1452,7 +1418,7 @@ class DufsService:
         self.append_log("ngrok已停止")
         # 通知UI更新
         if self.gui_instance:
-            self.gui_instance.status_updated.emit()
+            QTimer.singleShot(0, lambda: self.gui_instance.status_updated.emit())
             
     def get_resource_path(self, resource_name):
         """获取资源文件路径"""
@@ -1736,6 +1702,37 @@ class DufsServiceDialog(QDialog):
         
         auth_group.setLayout(auth_layout)
         
+        # ngrok配置
+        ngrok_group = QGroupBox("ngrok配置")
+        ngrok_layout = QGridLayout()
+        ngrok_layout.setContentsMargins(15, 15, 15, 15)
+        ngrok_layout.setSpacing(12)
+        
+        authtoken_label = QLabel("Authtoken:")
+        authtoken_label.setAlignment(Qt.AlignVCenter)
+        ngrok_layout.addWidget(authtoken_label, 0, 0)
+        
+        # 创建水平布局容纳authtoken输入框和清空按钮
+        authtoken_layout = QHBoxLayout()
+        authtoken_layout.setSpacing(8)
+        
+        self.authtoken_edit = QLineEdit()
+        self.authtoken_edit.setEchoMode(QLineEdit.Password)
+        self.authtoken_edit.setPlaceholderText("请输入ngrok authtoken（留空不启用）")
+        authtoken_layout.addWidget(self.authtoken_edit)
+        
+        # 添加清空按钮
+        clear_authtoken_btn = QPushButton("清空")
+        clear_authtoken_btn.setObjectName("InfoBtn")
+        clear_authtoken_btn.setMinimumWidth(60)
+        clear_authtoken_btn.clicked.connect(lambda: self.authtoken_edit.clear())
+        authtoken_layout.addWidget(clear_authtoken_btn)
+        
+        ngrok_layout.addLayout(authtoken_layout, 0, 1)
+        
+        
+        ngrok_group.setLayout(ngrok_layout)
+        
         # 按钮布局
         btn_layout = QHBoxLayout()
         btn_layout.setContentsMargins(0, 10, 0, 0)
@@ -1758,6 +1755,7 @@ class DufsServiceDialog(QDialog):
         main_layout.addWidget(basic_group)
         main_layout.addWidget(perm_group)
         main_layout.addWidget(auth_group)
+        main_layout.addWidget(ngrok_group)
         main_layout.addLayout(btn_layout)
         self.setLayout(main_layout)
         
@@ -1768,6 +1766,7 @@ class DufsServiceDialog(QDialog):
             self.port_edit.setText(self.service.port)
             self.allow_upload_check.setChecked(self.service.allow_upload)
             self.allow_delete_check.setChecked(self.service.allow_delete)
+            self.authtoken_edit.setText(self.service.ngrok_authtoken)
             
             if self.service.auth_rules:
                 username = self.service.auth_rules[0].get("username", "")
@@ -1844,10 +1843,9 @@ class DufsServiceDialog(QDialog):
         service.allow_search = True
         service.allow_archive = True
         
-        # 复制原服务的ngrok配置（如果是编辑服务）
-        if self.service:
-            service.ngrok_authtoken = self.service.ngrok_authtoken
-            service.ngrok_mode = self.service.ngrok_mode
+        # 设置ngrok配置
+        service.ngrok_authtoken = self.authtoken_edit.text().strip()
+        service.ngrok_mode = "authtoken"
         
         # 认证规则
         username = self.username_edit.text().strip()
@@ -2035,10 +2033,6 @@ class DufsMultiGUI(QMainWindow):
         """刷新日志缓冲区到UI"""
         if not service or not service.log_widget:
             return
-        
-        # 停止定时器
-        if service.log_timer and service.log_timer.isActive():
-            service.log_timer.stop()
         
         # 批量处理日志
         if service.log_buffer:
@@ -3809,23 +3803,27 @@ Categories=Utility;
             # 比较最后一个权限配置
             elif dialog.service.allow_archive != service.allow_archive:
                 config_changed = True
-            
-            # 比较auth_rules内容，而不是对象本身
-            # 检查auth_rules列表长度
-            if len(dialog.service.auth_rules) != len(service.auth_rules):
-                config_changed = True
-            else:
-                # 检查每个auth_rule的内容
-                for new_rule, old_rule in zip(dialog.service.auth_rules, service.auth_rules):
-                    if (new_rule.get("username", "") != old_rule.get("username", "") or
-                        new_rule.get("password", "") != old_rule.get("password", "") or
-                        new_rule.get("paths", []) != old_rule.get("paths", [])):
-                        config_changed = True
-                        break
-            
-            if not config_changed:
-                # 配置未变化，直接返回，不执行重启
-                return
+        
+        # 比较ngrok配置 - 独立检查，不使用elif
+        if dialog.service.ngrok_authtoken != service.ngrok_authtoken or dialog.service.ngrok_mode != service.ngrok_mode:
+            config_changed = True
+        
+        # 比较auth_rules内容，而不是对象本身
+        # 检查auth_rules列表长度
+        if len(dialog.service.auth_rules) != len(service.auth_rules):
+            config_changed = True
+        else:
+            # 检查每个auth_rule的内容
+            for new_rule, old_rule in zip(dialog.service.auth_rules, service.auth_rules):
+                if (new_rule.get("username", "") != old_rule.get("username", "") or
+                    new_rule.get("password", "") != old_rule.get("password", "") or
+                    new_rule.get("paths", []) != old_rule.get("paths", [])):
+                    config_changed = True
+                    break
+        
+        if not config_changed:
+            # 配置未变化，直接返回，不执行重启
+            return
             
             # 保存服务当前状态（是否运行中）
             was_running = service.status == ServiceStatus.RUNNING
@@ -4740,34 +4738,67 @@ Categories=Utility;
         self.refresh_tray_menu()
     
     def show_help(self):
-        """显示帮助信息"""
-        help_text = """
-欢迎使用 Dufs 服务管理工具！
-1. 添加服务
-    步骤 1：点击界面中的“添加服务”按钮。
-    步骤 2：在弹出的对话框中填写服务信息：
-        服务名称：输入一个唯一的服务名称。
-        服务路径：选择一个文件夹作为服务的根路径，所有通过此服务提供的文件都将在该路径下。
-        端口号：为服务分配一个端口。确保所选端口未被其他服务占用。
-    步骤 3：点击“确定”按钮，系统将检查端口是否可用并启动服务。
-2. 启动 ngrok
-        每个服务支持通过 ngrok 进行内网穿透，使服务可以从外网访问。
-    步骤 1：在服务配置界面，填写你从 ngrok 获取的 authtoken（也可以使用 API key）。
-    步骤 2：点击“启动 ngrok”按钮。系统会自动启动一个独立的 ngrok 隧道，并为该服务分配一个公网地址。
-        注意：每个服务需要使用独立的 ngrok 配置，确保使用不同的 authtoken 或 API key 来避免冲突。
-常见问题解答 (FAQ)
-    如何获取 ngrok 的 authtoken？
-        访问 ngrok 官网，注册账号并获取 authtoken。登录后，点击“Dashboard”获取个人 authtoken。
-    ngrok 启动失败怎么办？
-        请检查是否正确配置了 authtoken。如果提示端口已占用，请尝试使用不同的端口，或停止其他 ngrok 进程。
-    如何停止一个服务？
-        进入服务管理界面，点击服务名称旁的“停止”按钮，即可停止该服务。
-    服务日志如何查看？
-        每个服务都有独立的日志窗口，点击服务旁的“查看日志”按钮，实时查看服务状态。
-        """
-        
-        QMessageBox.information(self, "Dufs帮助", help_text, QMessageBox.Ok)
-    
+        """显示帮助信息（优化版）"""
+        help_text = '''
+        <html>
+        <head>
+            <style>
+                body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10pt; color: #333; }
+                h1 { color: #0066cc; margin-top: 0; font-size: 14pt; }
+                h2 { color: #004488; font-size: 12pt; margin-top: 15px; }
+                h3 { color: #004488; font-size: 11pt; margin-top: 12px; }
+                ul { margin-left: 20px; }
+                ol { margin-left: 20px; }
+                li { margin-bottom: 8px; }
+                p { margin-bottom: 10px; }
+                a { color: #0066cc; text-decoration: none; }
+                a:hover { text-decoration: underline; }
+            </style>
+        </head>
+        <body>
+        <h1>欢迎使用 Dufs 服务管理工具！</h1>
+
+        <h2>1. 局域网文件共享服务</h2>
+        <ol>
+            <li>步骤 1：点击界面中的“添加服务”按钮。</li>
+            <li>步骤 2：在弹出的对话框中填写服务信息：</li>
+            <ul>
+                <li>服务名称：输入一个独一无二的服务名称。</li>
+                <li>服务路径：挑选一个文件夹作为服务的根路径，所有通过此服务提供的文件都将存于该路径下。</li>
+                <li>端口号：为服务分配一个端口。务必确保所选端口未被其他服务占用。（随意填写也无妨，程序会找到一个可用端口并进行修改）</li>
+            </ul>
+            <li>步骤 3：点击“确定”按钮，系统将检查端口是否可用并启动服务。</li>
+        </ol>
+
+        <h2>2. 外网文件共享</h2>
+        <p>每个局域网共享服务均支持通过 ngrok 进行内网穿透，从而使服务能够从外网直接访问。</p>
+        <ol>
+            <li>步骤 1：在服务配置界面，填写你从 ngrok 获取的 authtoken。</li>
+            <li>步骤 2：点击“启动外网访问”按钮。系统会自动启动一个独立的 ngrok 隧道，并为该服务分配一个公网地址。</li>
+        </ol>
+
+        <h3>注意：</h3>
+        <ol>
+            <li>ngrok 免费账号，每个账号仅能建立三条隧道，且只能有一条隧道在线。</li>
+            <li>每个服务需要使用独立的 ngrok 配置，确保使用不同的 authtoken 以避免冲突。（双击详情可查看该服务保存的 authtoken 信息）</li>
+            <li>理论上，只要 ngrok 账号足够多，就可以开启无数条隧道，支持无数服务共享。</li>
+            <li>ngrok 免费账号，最高可提供 1GB 带宽，最多可承受 20k HTTP/S 请求。</li>
+        </ol>
+
+        <p style="margin-top: 20px; text-align: center;">
+            <a href="https://ngrok.com">ngrok 官网</a> | 
+            <a href="https://github.com/tysonye/dufs-gui">GitHub 仓库</a>
+        </p>
+    </body>
+    </html>
+        '''
+
+        QMessageBox.information(
+            self,
+            "Dufs 帮助",
+            help_text,
+            QMessageBox.Ok
+        )
     def monitor_service(self, service, _index):
         """监控服务状态"""
         while True:
@@ -4790,17 +4821,11 @@ Categories=Utility;
                     service.status = ServiceStatus.STOPPED
                     service.local_addr = ""
                 
-                # 更新服务列表
-                self.status_updated.emit()
-                
-                # 更新状态栏
-                self.status_bar.showMessage(f"服务已停止: {service.name}")
-                
-                # 记录日志
-                self.append_log("服务异常退出", error=True, service_name=service.name)
-                
-                # 刷新托盘菜单
-                self.refresh_tray_menu()
+                # 使用QTimer.singleShot确保所有UI操作在主线程中执行
+                QTimer.singleShot(0, lambda: self.status_updated.emit())
+                QTimer.singleShot(0, lambda: self.status_bar.showMessage(f"服务已停止: {service.name}"))
+                QTimer.singleShot(0, lambda: self.append_log("服务异常退出", error=True, service_name=service.name))
+                QTimer.singleShot(0, self.refresh_tray_menu)
                 break
             
             # 双校验：检查端口是否可访问
@@ -4872,4 +4897,5 @@ if __name__ == "__main__":
         app.setWindowIcon(QIcon(icon_path))
     
     window = DufsMultiGUI()
+    window.show()
     sys.exit(app.exec_())
