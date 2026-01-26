@@ -34,14 +34,8 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QColor, QIcon, QFontMetrics, QCursor
 
 # 配置文件路径
-# 获取用户配置目录，支持跨平台
-if os.name == 'nt':  # Windows
-    config_dir = os.path.join(os.environ['APPDATA'], 'DufsGUI')
-elif os.name == 'posix':  # Linux/macOS
-    config_dir = os.path.join(os.environ['HOME'], '.dufs_gui')
-else:
-    # 其他平台使用当前目录
-    config_dir = os.path.dirname(os.path.abspath(__file__))
+# 仅支持Windows系统
+config_dir = os.path.join(os.environ['APPDATA'], 'DufsGUI')
 
 # 创建配置目录（如果不存在）
 os.makedirs(config_dir, exist_ok=True)
@@ -507,49 +501,12 @@ def get_resource_path(filename):
     Returns:
         str: 资源文件的绝对路径
     """
-    path = ""
     if hasattr(sys, '_MEIPASS'):
         # 单文件打包模式，从临时目录加载
-        path = os.path.join(sys._MEIPASS, filename)
-        
-        # 检查文件是否存在
-        if not os.path.exists(path):
-            # 尝试在当前目录查找
-            current_dir = os.getcwd()
-            alternative_path = os.path.join(current_dir, filename)
-            if os.path.exists(alternative_path):
-                path = alternative_path
-            else:
-                # 尝试在可执行文件所在目录查找
-                exe_dir = os.path.dirname(sys.executable)
-                alternative_path = os.path.join(exe_dir, filename)
-                if os.path.exists(alternative_path):
-                    path = alternative_path
-                else:
-                    # 检查当前目录下的dufs目录
-                    dufs_dir = os.path.join(current_dir, "dufs")
-                    alternative_path = os.path.join(dufs_dir, filename)
-                    if os.path.exists(alternative_path):
-                        path = alternative_path
-                    else:
-                        # 检查可执行文件所在目录下的dufs目录
-                        dufs_dir = os.path.join(exe_dir, "dufs")
-                        alternative_path = os.path.join(dufs_dir, filename)
-                        if os.path.exists(alternative_path):
-                            path = alternative_path
+        return os.path.join(sys._MEIPASS, filename)
     else:
         # 开发模式，从程序所在目录加载
-        path = os.path.abspath(os.path.join(os.path.dirname(__file__), filename))
-        
-        # 检查文件是否存在
-        if not os.path.exists(path):
-            # 检查当前目录下的dufs目录
-            dufs_dir = os.path.join(os.path.dirname(__file__), "dufs")
-            alternative_path = os.path.join(dufs_dir, filename)
-            if os.path.exists(alternative_path):
-                path = alternative_path
-    
-    return path
+        return os.path.abspath(os.path.join(os.path.dirname(__file__), filename))
 
 # 独立日志窗口类
 class LogWindow(QMainWindow):
@@ -993,20 +950,16 @@ class DufsService:
             QTimer.singleShot(0, lambda: self.gui_instance.update_service_list())
         
     def get_ngrok_path(self):
-        """获取ngrok路径，自动下载如果不存在"""
+        """获取ngrok路径，直接使用根目录的ngrok.exe"""
         
-        # 定义ngrok文件名
-        system = platform.system()
-        if system == "Windows":
-            ngrok_filename = "ngrok.exe"
-        else:
-            ngrok_filename = "ngrok"
+        # 定义ngrok文件名（仅支持Windows系统）
+        ngrok_filename = "ngrok.exe"
         
-        # 检查多个位置
+        # 检查多个位置，优先使用根目录的ngrok.exe
         check_paths = [
-            os.path.join(os.getcwd(), ngrok_filename),
-            os.path.join(config_dir, ngrok_filename),
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), ngrok_filename)  # 直接使用脚本所在目录
+            os.path.join(os.getcwd(), ngrok_filename),  # 根目录
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), ngrok_filename),  # 脚本所在目录
+            os.path.join(config_dir, ngrok_filename)  # 配置目录
         ]
         
         for path in check_paths:
@@ -1017,74 +970,8 @@ class DufsService:
         if shutil.which(ngrok_filename):
             return ngrok_filename
         
-        # 如果都找不到，下载ngrok
-        # 注意：这里不使用append_log，因为get_ngrok_path可能在服务创建前调用，gui_instance可能还没有设置
-        
-        # 构建下载URL
-        arch = platform.machine()
-        if system == "Windows":
-            if arch in ["AMD64", "x86_64"]:
-                download_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
-            else:
-                download_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-386.zip"
-        elif system == "Darwin":
-            if arch in ["AMD64", "x86_64"]:
-                download_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-amd64.zip"
-            else:
-                download_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-arm64.zip"
-        else:  # Linux
-            if arch in ["AMD64", "x86_64"]:
-                download_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz"
-            else:
-                download_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-386.tgz"
-        
-        try:
-            # 下载ngrok
-            response = requests.get(download_url, stream=True, timeout=30)
-            response.raise_for_status()
-            
-            # 保存到临时文件
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".zip" if ".zip" in download_url else ".tgz") as tmp_file:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        tmp_file.write(chunk)
-                tmp_path = tmp_file.name
-            
-            # 解压文件
-            extract_dir = tempfile.mkdtemp()
-            if ".zip" in download_url:
-                with zipfile.ZipFile(tmp_path, "r") as zip_ref:
-                    zip_ref.extractall(extract_dir)
-            else:  # tar.gz
-                with tarfile.open(tmp_path, "r:gz") as tar_ref:
-                    tar_ref.extractall(extract_dir)
-            
-            # 找到ngrok可执行文件
-            extracted_path = os.path.join(extract_dir, ngrok_filename)
-            if not os.path.exists(extracted_path):
-                # 可能在子目录中
-                for root, dirs, files in os.walk(extract_dir):
-                    if ngrok_filename in files:
-                        extracted_path = os.path.join(root, ngrok_filename)
-                        break
-            
-            # 复制到配置目录
-            target_path = os.path.join(config_dir, ngrok_filename)
-            shutil.copy2(extracted_path, target_path)
-            
-            # 设置执行权限（非Windows）
-            if system != "Windows":
-                os.chmod(target_path, 0o755)
-            
-            # 清理临时文件
-            os.unlink(tmp_path)
-            shutil.rmtree(extract_dir)
-            
-            # 不输出到控制台，只返回结果
-            return target_path
-        except (requests.exceptions.RequestException, OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as e:
-            # 不输出到控制台，只返回结果
-            return "ngrok"  # 回退到系统PATH
+        # 如果都找不到，直接返回ngrok.exe（会在运行时失败）
+        return ngrok_filename
         
     def start_ngrok(self):
         """启动ngrok内网穿透，将核心逻辑移至后台线程"""
@@ -2207,8 +2094,7 @@ class DufsMultiGUI(QMainWindow):
         self.tray_icon = None
         self.default_icon = None
         self.tray_menu = None
-        self._tray_refresh_timer = None
-        
+        self._tray_refresh_timer = None        
         self.init_ui()
         self.status_updated.connect(self.update_service_list)
         self.log_signal.connect(self._append_log_ui)
@@ -2618,27 +2504,16 @@ class DufsMultiGUI(QMainWindow):
             self.append_log(f"加载配置失败: {str(e)}", error=True, service_name="系统")
     
     def is_auto_start_enabled(self):
-        """检查是否已启用系统自启动"""
+        """检查是否已启用系统自启动（仅支持Windows）"""
         try:
-            if os.name == 'nt':  # Windows
-                key_path = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ) as key:
-                    try:
-                        # 尝试获取值
-                        winreg.QueryValueEx(key, "DufsGUI")
-                        return True
-                    except FileNotFoundError:
-                        return False
-            elif os.name == 'posix':  # Linux/macOS
-                # Linux: 检查桌面条目
-                if os.path.exists(os.path.join(os.environ['HOME'], '.config', 'autostart', 'dufs-gui.desktop')):
+            key_path = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ) as key:
+                try:
+                    # 尝试获取值
+                    winreg.QueryValueEx(key, "DufsGUI")
                     return True
-                # macOS: 检查LaunchAgents
-                if os.path.exists(os.path.join(os.environ['HOME'], 'Library', 'LaunchAgents', 'com.dufs.gui.plist')):
-                    return True
-                return False
-            else:
-                return False
+                except FileNotFoundError:
+                    return False
         except (ImportError, OSError, KeyError) as e:
             self.append_log(f"检查自启动状态失败: {str(e)}", error=True, service_name="系统")
             return False
@@ -2692,101 +2567,40 @@ class DufsMultiGUI(QMainWindow):
         return exe_path
     
     def add_auto_start(self):
-        """添加系统自启动项"""
+        """添加系统自启动项（仅支持Windows）"""
         try:
-            if os.name == 'nt':  # Windows
-                import winreg
-                # 获取当前可执行文件路径
-                exe_path = self.get_correct_exe_path()
-                
-                # 清理旧的自启动项
-                key_path = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
-                    try:
-                        winreg.DeleteValue(key, "DufsGUI")
-                        self.append_log("已清理旧的自启动项", service_name="系统")
-                    except FileNotFoundError:
-                        pass  # 已经不存在，忽略
-                
-                # 设置新的自启动项
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
-                    winreg.SetValueEx(key, "DufsGUI", 0, winreg.REG_SZ, f'"{exe_path}"')
-                self.append_log(f"已添加开机自启动，路径: {exe_path}", service_name="系统")
-            elif os.name == 'posix':  # Linux/macOS
-                if sys.platform == 'darwin':  # macOS
-                    # 使用LaunchAgents
-                    plist_content = f'''
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.dufs.gui</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{sys.executable}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <false/>
-</dict>
-</plist>
-                    '''
-                    plist_path = os.path.join(os.environ['HOME'], 'Library', 'LaunchAgents', 'com.dufs.gui.plist')
-                    with open(plist_path, 'w') as f:
-                        f.write(plist_content)
-                    # 加载启动项
-                    subprocess.run(['launchctl', 'load', plist_path], check=True)
-                else:  # Linux
-                    # 创建桌面条目
-                    desktop_content = f'''
-[Desktop Entry]
-Type=Application
-Name=DufsGUI
-Exec={sys.executable}
-Terminal=false
-Icon=utilities-terminal
-Categories=Utility;
-                    '''
-                    autostart_dir = os.path.join(os.environ['HOME'], '.config', 'autostart')
-                    os.makedirs(autostart_dir, exist_ok=True)
-                    desktop_path = os.path.join(autostart_dir, 'dufs-gui.desktop')
-                    with open(desktop_path, 'w') as f:
-                        f.write(desktop_content)
-                    # 确保文件可执行
-                    os.chmod(desktop_path, 0o755)
-                self.append_log("已添加开机自启动", service_name="系统")
-        except (OSError, PermissionError, subprocess.SubprocessError, FileNotFoundError) as e:
+            import winreg
+            # 获取当前可执行文件路径
+            exe_path = self.get_correct_exe_path()
+            
+            # 清理旧的自启动项
+            key_path = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+                try:
+                    winreg.DeleteValue(key, "DufsGUI")
+                    self.append_log("已清理旧的自启动项", service_name="系统")
+                except FileNotFoundError:
+                    pass  # 已经不存在，忽略
+            
+            # 设置新的自启动项
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.SetValueEx(key, "DufsGUI", 0, winreg.REG_SZ, f'"{exe_path}"')
+            self.append_log(f"已添加开机自启动，路径: {exe_path}", service_name="系统")
+        except (OSError, PermissionError, FileNotFoundError) as e:
             self.append_log(f"添加自启动失败: {str(e)}", error=True, service_name="系统")
             QMessageBox.warning(self, "警告", f"添加自启动失败: {str(e)}")
 
     def remove_auto_start(self):
-        """移除系统自启动项"""
+        """移除系统自启动项（仅支持Windows）"""
         try:
-            if os.name == 'nt':  # Windows
-                import winreg
-                key_path = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
-                    try:
-                        winreg.DeleteValue(key, "DufsGUI")
-                        self.append_log("已移除开机自启动", service_name="系统")
-                    except FileNotFoundError:
-                        pass  # 已经不存在，忽略
-            elif os.name == 'posix':  # Linux/macOS
-                if sys.platform == 'darwin':  # macOS
-                    plist_path = os.path.join(os.environ['HOME'], 'Library', 'LaunchAgents', 'com.dufs.gui.plist')
-                    if os.path.exists(plist_path):
-                        # 卸载启动项
-                        subprocess.run(['launchctl', 'unload', plist_path], check=True)
-                        # 删除plist文件
-                        os.remove(plist_path)
-                        self.append_log("已移除开机自启动", service_name="系统")
-                else:  # Linux
-                    desktop_path = os.path.join(os.environ['HOME'], '.config', 'autostart', 'dufs-gui.desktop')
-                    if os.path.exists(desktop_path):
-                        os.remove(desktop_path)
-                        self.append_log("已移除开机自启动", service_name="系统")
+            import winreg
+            key_path = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+                try:
+                    winreg.DeleteValue(key, "DufsGUI")
+                    self.append_log("已移除开机自启动", service_name="系统")
+                except FileNotFoundError:
+                    pass  # 已经不存在，忽略
         except (OSError, PermissionError, subprocess.SubprocessError, FileNotFoundError) as e:
             self.append_log(f"移除自启动失败: {str(e)}", error=True, service_name="系统")
             QMessageBox.warning(self, "警告", f"移除自启动失败: {str(e)}")
@@ -3512,53 +3326,33 @@ Categories=Utility;
                         import time
                         import os
                         
-                        # 尝试读取数据，使用select来实现非阻塞（在Windows上使用不同的方法）
-                        if os.name == 'nt':  # Windows系统
-                            # Windows上使用ctypes设置文件描述符为非阻塞
-                            import ctypes
-                            
-                            # 获取文件描述符
-                            fd = pipe.fileno()
-                            
-                            # 设置为非阻塞模式
-                            flags = ctypes.windll.kernel32.SetNamedPipeHandleState(
-                                fd, ctypes.byref(ctypes.c_uint(1)), None, None)
-                            
-                            try:
-                                # 尝试读取数据，最多读取4096字节
-                                data = pipe.read(4096)
-                                if data:
-                                    buffer += data
-                                    # 处理缓冲区中的完整行
-                                    while b'\n' in buffer:
-                                        line_bytes, buffer = buffer.split(b'\n', 1)
-                                        line = line_bytes.decode('utf-8', errors='replace').strip()
-                                        if line:
-                                            self.append_log(line, error=is_stderr, service_name=service.name, service=service)
-                            except BlockingIOError:
-                                # 没有数据可读，继续循环
-                                pass
-                            except (OSError, IOError, BrokenPipeError) as e:
-                                # 其他错误，可能是管道已关闭
-                                break
-                        else:  # Unix-like系统
-                            import select
-                            
-                            # 使用select实现非阻塞读取
-                            rlist, _, _ = select.select([pipe], [], [], 0.1)  # 100ms超时
-                            if pipe in rlist:
-                                data = pipe.read(4096)
-                                if data:
-                                    buffer += data
-                                    # 处理缓冲区中的完整行
-                                    while b'\n' in buffer:
-                                        line_bytes, buffer = buffer.split(b'\n', 1)
-                                        line = line_bytes.decode('utf-8', errors='replace').strip()
-                                        if line:
-                                            self.append_log(line, error=is_stderr, service_name=service.name, service=service)
-                                else:
-                                    # 管道已关闭
-                                    break
+                        # Windows上使用ctypes设置文件描述符为非阻塞
+                        import ctypes
+                        
+                        # 获取文件描述符
+                        fd = pipe.fileno()
+                        
+                        # 设置为非阻塞模式
+                        flags = ctypes.windll.kernel32.SetNamedPipeHandleState(
+                            fd, ctypes.byref(ctypes.c_uint(1)), None, None)
+                        
+                        try:
+                            # 尝试读取数据，最多读取4096字节
+                            data = pipe.read(4096)
+                            if data:
+                                buffer += data
+                                # 处理缓冲区中的完整行
+                                while b'\n' in buffer:
+                                    line_bytes, buffer = buffer.split(b'\n', 1)
+                                    line = line_bytes.decode('utf-8', errors='replace').strip()
+                                    if line:
+                                        self.append_log(line, error=is_stderr, service_name=service.name, service=service)
+                        except BlockingIOError:
+                            # 没有数据可读，继续循环
+                            pass
+                        except (OSError, IOError, BrokenPipeError) as e:
+                            # 其他错误，可能是管道已关闭
+                            break
                         
                         # 控制循环频率，避免占用过多CPU资源
                         time.sleep(0.1)
@@ -4604,14 +4398,10 @@ Categories=Utility;
         # 移除首尾空白字符
         arg = arg.strip()
         
-        if os.name == 'nt':  # Windows系统
-            # 移除Windows特有的危险字符，防止命令注入
-            dangerous_chars = ['&', '|', '<', '>', '^', '%']
-            for char in dangerous_chars:
-                arg = arg.replace(char, '')
-        else:  # Unix-like系统
-            # 使用shlex.quote进行安全引用
-            arg = shlex.quote(arg)
+        # 移除Windows特有的危险字符，防止命令注入
+        dangerous_chars = ['&', '|', '<', '>', '^', '%']
+        for char in dangerous_chars:
+            arg = arg.replace(char, '')
         
         return arg
     
@@ -4639,30 +4429,14 @@ Categories=Utility;
             raise ValueError(f"路径层级过深，最多允许{AppConstants.MAX_PATH_DEPTH}级目录")
         
         # 防止使用系统关键目录作为服务路径
-        forbidden_paths = []
-        if os.name == 'nt':  # Windows系统
-            # Windows系统关键目录
-            forbidden_paths = [
-                os.environ.get("SystemRoot", "C:\\Windows"),
-                os.environ.get("ProgramFiles", "C:\\Program Files"),
-                os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"),
-                os.environ.get("APPDATA", "C:\\Users\\" + os.environ.get("USERNAME", "") + "\\AppData\\Roaming"),
-                os.environ.get("LOCALAPPDATA", "C:\\Users\\" + os.environ.get("USERNAME", "") + "\\AppData\\Local")
-            ]
-        else:  # Unix-like系统
-            # Unix系统关键目录
-            forbidden_paths = [
-                "/etc",
-                "/bin",
-                "/sbin",
-                "/usr",
-                "/lib",
-                "/lib64",
-                "/proc",
-                "/sys",
-                "/dev",
-                "/boot"
-            ]
+        # Windows系统关键目录
+        forbidden_paths = [
+            os.environ.get("SystemRoot", "C:\\Windows"),
+            os.environ.get("ProgramFiles", "C:\\Program Files"),
+            os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"),
+            os.environ.get("APPDATA", "C:\\Users\\" + os.environ.get("USERNAME", "") + "\\AppData\\Roaming"),
+            os.environ.get("LOCALAPPDATA", "C:\\Users\\" + os.environ.get("USERNAME", "") + "\\AppData\\Local")
+        ]
         
         # 检查路径是否在系统关键目录内
         for forbidden in forbidden_paths:
@@ -4868,7 +4642,6 @@ Categories=Utility;
             error_msg = f"启动服务失败: 服务路径必须是目录 - 路径: {service.serve_path}"
             success = False
         
-        # 更充分的服务路径权限检查
         # 1. 首先检查读取权限（基本权限）
         if success and not os.access(service.serve_path, os.R_OK):
             error_msg = f"启动服务失败: 服务路径不可访问（缺少读取权限） - 路径: {service.serve_path}"
@@ -4887,15 +4660,11 @@ Categories=Utility;
         # 记录服务启动信息
         self.append_log("启动 DUFS...", service_name=service.name)
         
-        # 启动进程 - 使用正确的参数
-        # 不要设置工作目录为dufs.exe所在目录，特别是在单文件打包模式下，这可能导致权限问题
         # 直接使用当前工作目录或服务路径作为工作目录
         cwd = service.serve_path
         
         # 启动进程，捕获输出以支持实时日志
-        creation_flags = 0
-        if os.name == 'nt':  # Windows系统
-            creation_flags = subprocess.CREATE_NO_WINDOW  # 隐藏命令窗口
+        creation_flags = subprocess.CREATE_NO_WINDOW  # 隐藏命令窗口（Windows系统）
         
         # 启动服务进程
         self.append_log(f"执行命令: {' '.join(command)}", service_name=service.name)

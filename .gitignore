@@ -24,9 +24,6 @@ dufs_config.json
 # 忽略图标文件
 *.ico
 
-# 忽略二进制文件
-dufs.exe
-ngrok.exe
 
 # 忽略虚拟环境
 .venv/
