@@ -90,13 +90,23 @@ class TrayManager:
         if not self.service_menu:
             return
         
-        # 清空服务管理子菜单
-        self.service_menu.clear()
-        
-        # 添加服务状态菜单项
+        # 智能更新：仅当服务状态变化时更新
         services = []
         if hasattr(self.main_window, 'manager') and hasattr(self.main_window.manager, 'services'):
             services = self.main_window.manager.services
+        
+        # 计算当前服务状态的哈希值
+        current_hash = hash(str([(s.name, s.status, getattr(s, 'public_access_status', 'stopped')) 
+                              for s in services]))
+        
+        # 如果状态没有变化，跳过更新
+        if hasattr(self, '_last_menu_hash') and self._last_menu_hash == current_hash:
+            return
+        
+        self._last_menu_hash = current_hash
+        
+        # 清空服务管理子菜单
+        self.service_menu.clear()
         
         if services:
             # 添加服务统计信息

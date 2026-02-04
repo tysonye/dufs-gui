@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QGroupBox, QMenu, QAction,
     QMessageBox, QDialog, QSystemTrayIcon, QStyle, QStatusBar, QTableWidget,
     QPlainTextEdit, QTableWidgetItem, QSizePolicy, QGraphicsDropShadowEffect,
-    QProgressBar, QHeaderView
+    QProgressBar, QHeaderView, QCheckBox
 )
 from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QTimer
 from PyQt5.QtGui import QColor, QIcon, QFont
@@ -25,6 +25,7 @@ from log_manager import LogManager
 from log_window import LogWindow
 from service_dialog import DufsServiceDialog
 from tray_manager import TrayManager
+from startup_manager import StartupManager
 
 class MainWindow(QMainWindow):
     """主窗口类"""
@@ -90,6 +91,22 @@ class MainWindow(QMainWindow):
 
         # 为关键区域添加阴影效果
         self._setup_shadows()
+        
+        # 设置定期保存配置的定时器（每30秒保存一次，用于异常退出后的恢复）
+        self._setup_auto_save_timer()
+
+    def _setup_auto_save_timer(self):
+        """设置自动保存定时器"""
+        self.auto_save_timer = QTimer(self)
+        self.auto_save_timer.timeout.connect(self._auto_save_config)
+        self.auto_save_timer.start(30000)  # 每30秒保存一次
+        
+    def _auto_save_config(self):
+        """自动保存配置（不标记为正常退出）"""
+        try:
+            self._save_config(normal_exit=False)
+        except Exception as e:
+            print(f"自动保存配置失败: {str(e)}")
 
     def _setup_fonts(self):
         """优化全局字体排版"""
@@ -173,6 +190,12 @@ class MainWindow(QMainWindow):
         _ = self.log_window_btn.clicked.connect(self._open_log_window)
         top_button_layout.addWidget(self.log_window_btn)
 
+        # 开机自启复选框
+        self.startup_checkbox = QCheckBox("开机自启")
+        self.startup_checkbox.setChecked(StartupManager.is_startup_enabled())
+        self.startup_checkbox.stateChanged.connect(self._toggle_startup)
+        top_button_layout.addWidget(self.startup_checkbox)
+
         self.exit_btn = QPushButton("关闭程序")
         _ = self.exit_btn.clicked.connect(self._on_exit)
         top_button_layout.addWidget(self.exit_btn)
@@ -193,6 +216,9 @@ class MainWindow(QMainWindow):
         self.service_table.setColumnWidth(3, 80)
         # 详情列使用拉伸模式，自动填充剩余空间
         self.service_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+
+        # 设置垂直表头（行号）按照内容自适应
+        self.service_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
 
         # 设置表格属性
         self.service_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -366,6 +392,19 @@ class MainWindow(QMainWindow):
         """加载配置"""
         try:
             services_config = self.config_manager.get_services()
+            app_state = self.config_manager.get_app_state()
+            
+            # 检查上次是否正常退出
+            normal_exit = app_state.get('normal_exit', True)
+            last_exit_time = app_state.get('last_exit_time', 0)
+            
+            # 如果上次不是正常退出，或者距离上次退出超过5分钟，认为是异常退出（关机/崩溃/强制结束）
+            time_since_last_exit = time.time() - last_exit_time
+            should_auto_start = not normal_exit or time_since_last_exit > 300
+            
+            if should_auto_start:
+                print(f"[自动恢复] 检测到异常退出，准备恢复服务。normal_exit={normal_exit}, time_since_last_exit={time_since_last_exit:.0f}秒")
+            
             for service_config in services_config:
                 service = DufsService(
                     name=str(service_config.get('name', '默认服务')),
@@ -407,14 +446,73 @@ class MainWindow(QMainWindow):
                     port = self.manager.find_available_port(5001)
                     service.port = str(port)
                 self.manager.add_service(service)
+                
+                # 自动恢复服务运行状态（如果是异常退出或设置了自动启动）
+                if should_auto_start:
+                    auto_start = service_config.get('auto_start', False)
+                    public_auto_start = service_config.get('public_auto_start', False)
+                    if auto_start:
+                        # 延迟启动，确保UI已初始化
+                        QTimer.singleShot(1000, lambda s=service, p=public_auto_start: self._auto_start_service(s, p))
+                
             self.update_service_tree()
             # 如果有名称或端口被更改，保存配置
             self._save_config()
         except Exception as e:
             print(f"加载配置失败: {str(e)}")
     
-    def _save_config(self):
-        """保存配置"""
+    def _auto_start_service(self, service, public_auto_start=False):
+        """自动启动服务
+        
+        Args:
+            service: 服务实例
+            public_auto_start: 是否同时启动公网访问
+        """
+        try:
+            # 找到服务索引
+            service_index = -1
+            for i, s in enumerate(self.manager.services):
+                if s.name == service.name:
+                    service_index = i
+                    break
+            
+            if service_index < 0:
+                return
+            
+            # 选择服务
+            self.service_table.selectRow(service_index)
+            
+            # 启动内网服务
+            if service.status == ServiceStatus.STOPPED:
+                print(f"[自动恢复] 正在启动服务: {service.name}")
+                threading.Thread(target=service.start, args=(self.log_manager,), daemon=True).start()
+                
+                # 如果需要，同时启动公网访问
+                if public_auto_start:
+                    # 等待内网服务启动完成
+                    def start_public_when_ready():
+                        import time
+                        max_wait = 50  # 最大等待5秒
+                        wait_count = 0
+                        while wait_count < max_wait:
+                            time.sleep(0.1)
+                            wait_count += 1
+                            if service.status == ServiceStatus.RUNNING:
+                                # 启动公网访问
+                                print(f"[自动恢复] 正在启动公网访问: {service.name}")
+                                threading.Thread(target=service.start_public_access, args=(self.log_manager,), daemon=True).start()
+                                return
+                    
+                    threading.Thread(target=start_public_when_ready, daemon=True).start()
+        except Exception as e:
+            print(f"[自动恢复] 启动服务失败: {str(e)}")
+    
+    def _save_config(self, normal_exit=False):
+        """保存配置
+        
+        Args:
+            normal_exit: 是否为正常退出
+        """
         try:
             services_config = []
             for service in self.manager.services:
@@ -429,10 +527,20 @@ class MainWindow(QMainWindow):
                     'allow_archive': service.allow_archive,
                     'allow_all': service.allow_all,
                     'auth_user': getattr(service, 'auth_user', ''),
-                    'auth_pass': getattr(service, 'auth_pass', '')
+                    'auth_pass': getattr(service, 'auth_pass', ''),
+                    # 保存服务运行状态
+                    'auto_start': service.status == ServiceStatus.RUNNING,
+                    'public_auto_start': getattr(service, 'public_access_status', 'stopped') == 'running'
                 }
                 services_config.append(service_config)
             self.config_manager.set_services(services_config)
+            
+            # 保存应用程序状态
+            self.config_manager.update_app_state(
+                normal_exit=normal_exit,
+                last_exit_time=time.time()
+            )
+            
             return True
         except Exception as e:
             print(f"保存配置失败: {str(e)}")
@@ -1143,6 +1251,9 @@ class MainWindow(QMainWindow):
                     if service.status == ServiceStatus.RUNNING and service.local_addr:
                         self._update_address_fields(service)
                         break
+            
+            # 服务状态改变时保存配置（用于异常退出后的恢复）
+            self._save_config()
         except Exception as e:
             print(f"处理服务状态更新失败: {str(e)}")
     
@@ -1256,15 +1367,32 @@ class MainWindow(QMainWindow):
     
     def closeEvent(self, event):
         """关闭事件"""
-        # 最小化到托盘，而不是真正关闭
-        event.ignore()
-        self.hide()
-        # 显示托盘消息
-        if hasattr(self, 'tray_manager'):
-            self.tray_manager.show_message("DufsGUI", "程序已最小化到托盘")
+        # 检查是否是系统关机事件
+        # QCloseEvent的reason()方法在PyQt5中可能不可用，我们检查 spontaneous()
+        # 非自发事件通常是由系统发起的（如关机）
+        if not event.spontaneous():
+            # 系统发起的关闭（如关机），保存状态并退出
+            print("[系统事件] 检测到系统关闭，正在保存状态...")
+            self._on_exit(normal_exit=False)
+            event.accept()
+        else:
+            # 用户发起的关闭，最小化到托盘
+            event.ignore()
+            self.hide()
+            # 显示托盘消息
+            if hasattr(self, 'tray_manager'):
+                self.tray_manager.show_message("DufsGUI", "程序已最小化到托盘")
     
-    def _on_exit(self):
-        """真正退出程序"""
+    def _on_exit(self, normal_exit=True):
+        """真正退出程序
+        
+        Args:
+            normal_exit: 是否为正常退出
+        """
+        # 停止自动保存定时器
+        if hasattr(self, 'auto_save_timer'):
+            self.auto_save_timer.stop()
+        
         # 停止所有服务
         for service in self.manager.services:
             if service.process:
@@ -1280,8 +1408,8 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
         
-        # 保存配置
-        self._save_config()
+        # 保存配置（标记为正常退出）
+        self._save_config(normal_exit=normal_exit)
         
         # 关闭日志窗口
         if self.log_window:
@@ -1294,3 +1422,15 @@ class MainWindow(QMainWindow):
         # 真正退出程序
         from PyQt5.QtWidgets import QApplication
         QApplication.quit()
+
+    def _toggle_startup(self, checked):
+        """切换开机自启状态"""
+        try:
+            if checked:
+                StartupManager.enable_startup()
+                QMessageBox.information(self, "提示", "已设置为开机自启")
+            else:
+                StartupManager.disable_startup()
+                QMessageBox.information(self, "提示", "已取消开机自启")
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"设置开机自启失败: {str(e)}")

@@ -117,14 +117,29 @@ class ServiceManager:
         if port in AppConstants.SYSTEM_RESERVED_PORTS:
             return False
 
-        # 检查端口是否被其他进程占用
+        # 检查端口是否被其他进程占用（检查多个关键地址）
+        check_hosts = ["127.0.0.1", "0.0.0.0"]
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(0.1)  # 添加超时设置
-                s.bind(("localhost", port))
-                return True
-        except OSError:
-            return False
+            from utils import get_local_ip
+            local_ip = get_local_ip()
+            if local_ip != "127.0.0.1":
+                check_hosts.append(local_ip)
+        except Exception:
+            pass
+        
+        for host in check_hosts:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    s.settimeout(0.5)
+                    s.bind((host, port))
+            except OSError as e:
+                import errno
+                if e.errno in (errno.EADDRINUSE, errno.EACCES):
+                    return False
+                # 其他错误继续检查
+        
+        return True
     
     def release_allocated_port(self, port: int) -> None:
         """释放已分配的端口

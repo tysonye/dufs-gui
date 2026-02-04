@@ -15,9 +15,6 @@ nuitka-crash-report.xml
 *.temp
 *.log
 
-# 忽略文档文件
-*.md
-
 # 忽略配置文件
 dufs_config.json
 

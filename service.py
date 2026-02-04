@@ -6,7 +6,7 @@
 
 import os
 import threading
-from PyQt5.QtCore import pyqtSignal, QObject
+from PyQt5.QtCore import pyqtSignal, QObject, QMetaObject, Qt, pyqtSlot
 from constants import get_resource_path
 
 
@@ -216,10 +216,22 @@ class DufsService(QObject):
             if public_access_status is not None:
                 self.public_access_status = public_access_status
         
-        # 发送状态更新信号
-        self.status_updated.emit()
+        # 发送状态更新信号（确保在主线程中执行）
+        if threading.current_thread() != threading.main_thread():
+            QMetaObject.invokeMethod(
+                self,
+                "_emit_status_updated",
+                Qt.QueuedConnection
+            )
+        else:
+            self._emit_status_updated()
         
         return True
+    
+    @pyqtSlot()
+    def _emit_status_updated(self):
+        """在主线程中安全发射状态更新信号"""
+        self.status_updated.emit()
     
     def get_cloudflared_path(self):
         """获取cloudflared路径，优先从lib文件夹查找"""
@@ -478,6 +490,9 @@ class DufsService(QObject):
             log_manager: 日志管理器实例
         """
         try:
+            # 设置监控线程终止标志
+            self.cloudflared_monitor_terminate = True
+            
             # 保存进程引用，避免在操作过程中访问已经释放的内存
             cloudflared_process = getattr(self, 'cloudflared_process', None)
             if cloudflared_process:
@@ -499,6 +514,10 @@ class DufsService(QObject):
                 # 记录停止成功的日志
                 if log_manager:
                     log_manager.append_log("公网访问已停止", False, self.name)
+            
+            # 重置监控线程引用
+            self.cloudflared_monitor_thread = None
+            
             return True
         except Exception as e:
             if log_manager:
@@ -519,12 +538,19 @@ class DufsService(QObject):
             if not cloudflared_process:
                 return
             
+            # 重置终止标志
+            self.cloudflared_monitor_terminate = False
+            
             # 添加超时检查
             start_time = time.time()
             timeout = 30  # 30秒超时
             
             # 读取输出
             for line in iter(cloudflared_process.stdout.readline, ''):
+                # 检查终止标志
+                if self.cloudflared_monitor_terminate:
+                    break
+                
                 if time.time() - start_time > timeout:
                     if log_manager:
                         log_manager.append_log("云流服务启动超时", True, self.name)
@@ -549,8 +575,8 @@ class DufsService(QObject):
                     if log_manager:
                         log_manager.append_log(line.strip(), False, self.name)
             
-            # 处理进程退出
-            if cloudflared_process.poll() is not None:
+            # 处理进程退出（仅在未主动终止时更新状态）
+            if not self.cloudflared_monitor_terminate and cloudflared_process.poll() is not None:
                 self.public_url = ""
                 self.update_status(public_access_status="stopped")
         except Exception as e:

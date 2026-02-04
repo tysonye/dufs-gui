@@ -12,7 +12,7 @@ def load_config() -> dict:
                 return json.load(f)
     except Exception as e:
         print(f"加载配置失败: {str(e)}")
-    return {"services": []}
+    return {"services": [], "app_state": {}}
 
 
 def save_config(config_data: dict) -> bool:
@@ -27,7 +27,7 @@ def save_config(config_data: dict) -> bool:
 
 
 class ConfigManager:
-    """简化版配置管理器"""
+    """配置管理器"""
     def __init__(self) -> None:
         self.config = load_config()
     
@@ -36,4 +36,20 @@ class ConfigManager:
     
     def set_services(self, services: list) -> bool:
         self.config["services"] = services
+        return save_config(self.config)
+    
+    def get_app_state(self) -> dict:
+        """获取应用程序状态"""
+        return self.config.get("app_state", {})
+    
+    def set_app_state(self, state: dict) -> bool:
+        """设置应用程序状态"""
+        self.config["app_state"] = state
+        return save_config(self.config)
+    
+    def update_app_state(self, **kwargs) -> bool:
+        """更新应用程序状态（增量更新）"""
+        app_state = self.config.get("app_state", {})
+        app_state.update(kwargs)
+        self.config["app_state"] = app_state
         return save_config(self.config)
