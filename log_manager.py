@@ -4,6 +4,7 @@
 # pyright: reportUnknownLambdaType=false
 import time
 import re
+import threading
 from typing import TYPE_CHECKING
 from PyQt5.QtCore import pyqtSignal, QObject, QTimer, Qt
 
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class LogManager(QObject):
-    """日志管理类，负责处理日志相关功能"""
+    """日志管理类，负责处理日志相关功能（线程安全）"""
 
     # 日志信号
     log_signal: pyqtSignal = pyqtSignal(str, bool, str)
@@ -27,6 +28,8 @@ class LogManager(QObject):
         self.log_buffer = []
         # 服务日志缓冲区，用于存储每个服务的日志缓冲
         self.service_log_buffers = {}
+        # 线程锁，保护日志缓冲区并发访问
+        self._buffer_lock = threading.Lock()
         # 连接信号，使用QueuedConnection确保在UI线程中执行
         self.log_signal.connect(
             self._append_log_ui, Qt.QueuedConnection
@@ -54,24 +57,31 @@ class LogManager(QObject):
         # 构建日志消息,包含时间戳和级别
         log_message = f"[{timestamp}] [{level}] {service_tag}{readable_message}"
 
-        # 将日志添加到全局缓冲区
-        self.log_buffer.append(log_message)
+        # 使用线程锁保护日志缓冲区操作
+        with self._buffer_lock:
+            # 将日志添加到全局缓冲区
+            self.log_buffer.append(log_message)
 
-        # 限制全局日志缓冲区大小，避免内存占用过高
-        if len(self.log_buffer) > 1000:
-            self.log_buffer = self.log_buffer[-1000:]
+            # 限制全局日志缓冲区大小，避免内存占用过高
+            if len(self.log_buffer) > 1000:
+                self.log_buffer = self.log_buffer[-1000:]
 
-        # 将日志添加到服务特定缓冲区
+            # 将日志添加到服务特定缓冲区
+            if service_name:
+                if service_name not in self.service_log_buffers:
+                    self.service_log_buffers[service_name] = []
+                
+                # 添加日志到服务缓冲区
+                self.service_log_buffers[service_name].append((log_message, error))
+                
+                # 优化批量刷新条件
+                should_flush = len(self.service_log_buffers[service_name]) >= 3
+            else:
+                should_flush = False
+
+        # 在锁外触发信号，避免死锁
         if service_name:
-            if service_name not in self.service_log_buffers:
-                self.service_log_buffers[service_name] = []
-            
-            # 添加日志到服务缓冲区
-            self.service_log_buffers[service_name].append((log_message, error))
-            
-            # 优化批量刷新条件
-            from constants import AppConstants
-            if len(self.service_log_buffers[service_name]) >= 3:  # 降低缓冲区大小，确保日志及时显示
+            if should_flush:  # 降低缓冲区大小，确保日志及时显示
                 # 触发批量刷新
                 self.flush_log_buffer_signal.emit(service_name)
         else:
@@ -121,21 +131,23 @@ class LogManager(QObject):
         return message
     
     def _flush_log_buffer(self, service_name: str) -> None:
-        """批量刷新服务日志缓冲区到UI"""
+        """批量刷新服务日志缓冲区到UI（线程安全）"""
         try:
-            # 检查服务缓冲区是否存在
-            if service_name not in self.service_log_buffers:
-                return
+            # 使用线程锁保护缓冲区操作
+            with self._buffer_lock:
+                # 检查服务缓冲区是否存在
+                if service_name not in self.service_log_buffers:
+                    return
+                
+                # 获取并清空缓冲区
+                log_entries = self.service_log_buffers[service_name]
+                if not log_entries:
+                    return
+                
+                # 清空缓冲区
+                self.service_log_buffers[service_name] = []
             
-            # 获取并清空缓冲区
-            log_entries = self.service_log_buffers[service_name]
-            if not log_entries:
-                return
-            
-            # 清空缓冲区
-            self.service_log_buffers[service_name] = []
-            
-            # 批量添加日志到UI
+            # 在锁外批量添加日志到UI，避免死锁
             for log_message, error in log_entries:
                 # 使用信号槽机制更新UI
                 self.log_signal.emit(log_message, error, service_name)

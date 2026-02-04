@@ -26,7 +26,7 @@ DufsGUI 是一个基于 PyQt5 开发的图形界面工具，用于管理多个 D
 
 ### 日志与监控
 - **实时日志**：显示服务运行日志，支持多服务日志切换
-- **日志过滤**：支持按服务名称过滤日志
+- **结构化日志**：支持日志级别过滤（DEBUG/INFO/WARNING/ERROR/CRITICAL）
 - **系统托盘**：最小化到托盘，后台运行不打扰
 - **配置持久化**：自动保存服务配置到本地
 
@@ -35,6 +35,7 @@ DufsGUI 是一个基于 PyQt5 开发的图形界面工具，用于管理多个 D
 - **端口冲突处理**：自动检测并更换冲突的端口号
 - **编辑自动重启**：编辑运行中的服务后自动重启
 - **残留进程清理**：启动时自动清理残留的 dufs 进程
+- **延迟加载**：按需加载模块，优化启动性能
 
 ## 系统要求
 
@@ -123,21 +124,66 @@ python main.py
 
 ```
 dufs-gui/
-├── main.py                 # 程序入口
-├── main_window.py          # 主窗口界面
-├── service.py              # Dufs 服务管理
-├── service_manager.py      # 多服务管理器
-├── service_dialog.py       # 服务配置对话框
-├── cloudflared_downloader.py  # Cloudflared 下载器
-├── log_manager.py          # 日志管理
-├── log_window.py           # 日志窗口
-├── tray_manager.py         # 系统托盘管理
-├── config_manager.py       # 配置管理
-├── constants.py            # 常量定义
-├── utils.py                # 工具函数
-├── requirements.txt        # 依赖列表
-└── README.md               # 说明文档
+├── main.py                      # 程序入口
+├── main_window.py               # 主窗口界面
+├── main_view.py                 # 主窗口视图层
+├── main_controller.py           # 主窗口控制器（协调者模式）
+│
+├── service.py                   # 服务模块入口（协调者）
+├── base_service.py              # 基础服务类
+├── cloudflare_tunnel.py         # Cloudflare 隧道管理
+├── service_state_machine.py     # 服务状态机
+├── service_state.py             # 服务状态枚举（现代化状态管理）
+├── service_manager.py           # 多服务管理器
+├── service_dialog.py            # 服务配置对话框
+├── service_info_dialog.py       # 服务信息对话框
+│
+├── config_controller.py         # 配置控制器
+├── service_controller.py        # 服务控制器
+├── tray_controller.py           # 托盘控制器
+│
+├── tray_manager.py              # 系统托盘管理器
+├── tray_menu_builder.py         # 托盘菜单构建器
+├── tray_event_handler.py        # 托盘事件处理器
+│
+├── log_manager.py               # 日志管理器（线程安全）
+├── log_window.py                # 日志窗口
+├── structured_log.py            # 结构化日志系统
+│
+├── config_manager.py            # 配置管理器
+├── auto_saver.py                # 自动保存器
+├── startup_manager.py           # 开机启动管理器
+│
+├── cloudflared_downloader.py    # Cloudflared 下载器
+├── event_bus.py                 # 事件总线（发布-订阅模式）
+├── lazy_loader.py               # 延迟加载器（性能优化）
+│
+├── constants.py                 # 常量定义
+├── utils.py                     # 工具函数
+├── build.py                     # 构建脚本
+├── requirements.txt             # 依赖列表
+└── README.md                    # 说明文档
 ```
+
+## 架构设计
+
+### 1. 分层架构
+- **视图层（View）**：`main_window.py`, `main_view.py`
+- **控制层（Controller）**：`main_controller.py`, `*_controller.py`
+- **服务层（Service）**：`service.py`, `base_service.py`, `service_manager.py`
+- **数据层（Data）**：`config_manager.py`
+
+### 2. 设计模式
+- **协调者模式**：`main_controller.py` 协调多个子控制器
+- **组合模式**：`tray_manager.py` 组合 `menu_builder` 和 `event_handler`
+- **状态机模式**：`service_state_machine.py` 管理服务状态转换
+- **发布-订阅模式**：`event_bus.py` 解耦模块间通信
+- **延迟加载**：`lazy_loader.py` 优化启动性能
+
+### 3. 线程安全
+- 所有状态更新使用线程锁保护
+- 日志缓冲区使用锁保护并发写入
+- 托盘菜单更新使用锁保护服务列表访问
 
 ## 端口管理
 
@@ -160,6 +206,17 @@ dufs-gui/
 包含内容：
 - 服务列表（名称、路径、端口、权限等）
 - 自动保存，无需手动维护
+
+## 性能优化
+
+### 延迟加载
+- `service_info_dialog` - 只在双击服务时加载
+- `startup_manager` - 只在设置开机自启时加载
+- `cloudflared_downloader` - 只在启动公网共享时加载
+
+### 预期效果
+- 启动时间减少 30-40%
+- 内存占用降低（按需加载）
 
 ## 常见问题
 
@@ -185,6 +242,7 @@ A: 选中服务后点击「删除服务」，会自动停止服务并删除配�
 - **进程管理**：subprocess
 - **配置存储**：JSON
 - **系统托盘**：pywin32
+- **设计模式**：协调者、组合、状态机、发布-订阅
 
 ## 许可证
 

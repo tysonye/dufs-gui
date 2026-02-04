@@ -1,303 +1,160 @@
-"""托盘管理模块"""
-# pyright: reportAny=false
-# pyright: reportUnknownParameterType=false
-# pyright: reportMissingParameterType=false
+"""托盘管理模块 - 协调者模式，组合MenuBuilder和EventHandler"""
 
-import os
-from PyQt5.QtWidgets import QSystemTrayIcon, QMenu, QAction
-from PyQt5.QtGui import QIcon, QColor
-from PyQt5.QtCore import Qt, QTimer
-from service import ServiceStatus
+import threading
+from PyQt5.QtWidgets import QSystemTrayIcon
+from PyQt5.QtCore import QTimer
+
+from tray_menu_builder import TrayMenuBuilder
+from tray_event_handler import TrayEventHandler
 
 
 class TrayManager:
-    """系统托盘管理器"""
-    
+    """系统托盘管理器 - 作为协调者，组合MenuBuilder和EventHandler（线程安全）
+
+    重构说明:
+    - 通过TrayMenuBuilder构建和管理菜单
+    - 通过TrayEventHandler处理事件
+    - 添加线程锁保护服务列表访问
+    - 保持向后兼容性
+    """
+
     def __init__(self, main_window):
         """初始化托盘管理器
-        
+
         Args:
             main_window: 主窗口实例
         """
         self.main_window = main_window
-        self.tray_icon = None
-        self.tray_menu = None
-        self.service_menu = None
-        self.service_actions = []
-        
+
+        # 线程锁，保护服务列表访问
+        self._services_lock = threading.Lock()
+
+        # 初始化菜单构建器
+        self.menu_builder = TrayMenuBuilder(main_window)
+
+        # 初始化事件处理器
+        self.event_handler = TrayEventHandler(main_window)
+
         # 初始化托盘
         self._init_tray()
-        
+
         # 定时更新托盘菜单
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_tray_menu)
         self.update_timer.start(2000)  # 每2秒更新一次
-        
+
         # 立即更新一次菜单
         self.update_tray_menu()
-    
+
     def _init_tray(self):
         """初始化托盘图标和菜单"""
-        # 检查图标文件是否存在
-        from constants import get_resource_path
-        icon_path = get_resource_path("icon.ico")
-        if os.path.exists(icon_path):
-            icon = QIcon(icon_path)
-        else:
-            # 如果图标文件不存在，使用默认构造函数
-            # 创建托盘图标（不指定图标）
-            self.tray_icon = QSystemTrayIcon(self.main_window)
+        # 构建托盘图标
+        self.tray_icon = self.menu_builder.build_tray_icon()
+
+        if not self.tray_icon:
             return
-        
-        # 创建托盘图标
-        self.tray_icon = QSystemTrayIcon(icon, self.main_window)
-        self.tray_icon.setToolTip("DufsGUI - 服务管理器")
-        
-        # 创建托盘菜单
-        self.tray_menu = QMenu()
-        
-        # 添加恢复窗口动作
-        restore_action = QAction("恢复窗口", self.main_window)
-        restore_action.triggered.connect(self._on_restore_window)
-        self.tray_menu.addAction(restore_action)
-        
-        # 添加分隔线
-        self.tray_menu.addSeparator()
-        
-        # 添加服务管理子菜单
-        self.service_menu = QMenu("服务管理")
-        self.tray_menu.addMenu(self.service_menu)
-        
-        # 添加分隔线
-        self.tray_menu.addSeparator()
-        
-        # 添加退出动作
-        exit_action = QAction("退出程序", self.main_window)
-        exit_action.triggered.connect(self._on_exit)
-        self.tray_menu.addAction(exit_action)
-        
+
+        # 设置事件处理器的托盘图标
+        self.event_handler.set_tray_icon(self.tray_icon)
+
+        # 构建托盘菜单
+        callbacks = self.event_handler.get_event_callbacks()
+        tray_menu = self.menu_builder.build_tray_menu(callbacks)
+
         # 设置托盘菜单
-        self.tray_icon.setContextMenu(self.tray_menu)
-        
+        self.tray_icon.setContextMenu(tray_menu)
+
         # 连接托盘图标点击事件
-        self.tray_icon.activated.connect(self._on_tray_activated)
-        
+        self.tray_icon.activated.connect(self.event_handler.on_tray_activated)
+
         # 显示托盘图标
         self.tray_icon.show()
-    
+
     def update_tray_menu(self):
-        """更新托盘菜单"""
-        if not self.service_menu:
-            return
-        
-        # 智能更新：仅当服务状态变化时更新
-        services = []
-        if hasattr(self.main_window, 'manager') and hasattr(self.main_window.manager, 'services'):
-            services = self.main_window.manager.services
-        
-        # 计算当前服务状态的哈希值
-        current_hash = hash(str([(s.name, s.status, getattr(s, 'public_access_status', 'stopped')) 
-                              for s in services]))
-        
-        # 如果状态没有变化，跳过更新
-        if hasattr(self, '_last_menu_hash') and self._last_menu_hash == current_hash:
-            return
-        
-        self._last_menu_hash = current_hash
-        
-        # 清空服务管理子菜单
-        self.service_menu.clear()
-        
-        if services:
-            # 添加服务统计信息
-            running_count = sum(1 for s in services if s.status == ServiceStatus.RUNNING)
-            total_count = len(services)
-            stats_action = QAction(f"服务统计: {running_count}/{total_count} 运行中", self.main_window)
-            stats_action.setEnabled(False)
-            self.service_menu.addAction(stats_action)
-            self.service_menu.addSeparator()
-            
-            for i, service in enumerate(services):
-                # 创建服务操作子菜单
-                service_submenu = QMenu()
-                
-                # 根据状态设置菜单标题和图标
-                status_text = f"{service.name} [{service.status}]"
-                if service.status == ServiceStatus.RUNNING:
-                    # 运行中 - 使用绿色标识
-                    service_submenu.setTitle(f"🟢 {status_text}")
-                elif service.status == ServiceStatus.STARTING:
-                    # 启动中 - 使用蓝色标识
-                    service_submenu.setTitle(f"🔵 {status_text}")
-                elif service.status == ServiceStatus.ERROR:
-                    # 错误 - 使用红色标识
-                    service_submenu.setTitle(f"🔴 {status_text}")
-                else:
-                    # 停止/其他 - 使用灰色标识
-                    service_submenu.setTitle(f"⚪ {status_text}")
-                
-                # 添加启动/停止动作
-                if service.status == ServiceStatus.RUNNING:
-                    stop_action = QAction("⏹ 停止服务", self.main_window)
-                    stop_action.triggered.connect(lambda checked, idx=i: self._on_stop_service(idx))
-                    service_submenu.addAction(stop_action)
-                else:
-                    start_action = QAction("▶ 启动服务", self.main_window)
-                    start_action.triggered.connect(lambda checked, idx=i: self._on_start_service(idx))
-                    service_submenu.addAction(start_action)
-                
-                # 添加公网访问动作
-                if service.status == ServiceStatus.RUNNING:
-                    service_submenu.addSeparator()
-                    if hasattr(service, 'public_access_status') and service.public_access_status == "running":
-                        stop_public_action = QAction("🌐 停止公网访问", self.main_window)
-                        stop_public_action.triggered.connect(lambda checked, idx=i: self._on_stop_public_access(idx))
-                        service_submenu.addAction(stop_public_action)
-                    else:
-                        start_public_action = QAction("🌐 启动公网访问", self.main_window)
-                        start_public_action.triggered.connect(lambda checked, idx=i: self._on_start_public_access(idx))
-                        service_submenu.addAction(start_public_action)
-                
-                # 添加查看日志动作
-                service_submenu.addSeparator()
-                log_action = QAction("📋 查看日志", self.main_window)
-                log_action.triggered.connect(lambda checked, idx=i: self._on_view_logs(idx))
-                service_submenu.addAction(log_action)
-                
-                # 添加服务子菜单到服务管理菜单
-                self.service_menu.addMenu(service_submenu)
-        else:
-            # 添加无服务提示
-            no_service_action = QAction("⚠ 无服务配置", self.main_window)
-            no_service_action.setEnabled(False)
-            self.service_menu.addAction(no_service_action)
-            
-            # 添加提示信息
-            tip_action = QAction("  请先在主窗口添加服务", self.main_window)
-            tip_action.setEnabled(False)
-            self.service_menu.addAction(tip_action)
-    
-    def _get_status_color(self, status):
-        """获取状态对应的颜色
-        
-        Args:
-            status: 服务状态
-            
-        Returns:
-            QColor: 状态对应的颜色
-        """
-        from constants import AppConstants
-        color_hex = AppConstants.STATUS_COLORS.get(status, "#95a5a6")
-        return QColor(color_hex)
-    
-    def _on_tray_activated(self, reason):
-        """托盘图标激活事件
-        
-        Args:
-            reason: 激活原因
-        """
-        if reason == QSystemTrayIcon.Trigger:
-            # 左键点击托盘图标
-            self._on_restore_window()
-    
-    def _on_restore_window(self):
-        """恢复窗口"""
-        if self.main_window.isMinimized():
-            self.main_window.showNormal()
-        elif not self.main_window.isVisible():
-            self.main_window.show()
-        self.main_window.raise_()
-        self.main_window.activateWindow()
-    
-    def _on_exit(self):
-        """退出程序"""
-        # 停止定时器
-        self.update_timer.stop()
-        
-        # 隐藏托盘图标
-        if self.tray_icon:
-            self.tray_icon.hide()
-        
-        # 调用主窗口的退出方法
-        if hasattr(self.main_window, '_on_exit'):
-            self.main_window._on_exit()
-        else:
-            self.main_window.close()
-    
-    def _on_start_service(self, index):
-        """启动服务
-        
-        Args:
-            index: 服务索引
-        """
-        if hasattr(self.main_window, '_start_service'):
-            # 模拟选择服务并启动
-            self.main_window.service_table.selectRow(index)
-            self.main_window._start_service()
-    
-    def _on_stop_service(self, index):
-        """停止服务
-        
-        Args:
-            index: 服务索引
-        """
-        if hasattr(self.main_window, '_stop_service'):
-            # 模拟选择服务并停止
-            self.main_window.service_table.selectRow(index)
-            self.main_window._stop_service()
-    
-    def _on_start_public_access(self, index):
-        """启动公网访问
-        
-        Args:
-            index: 服务索引
-        """
-        if hasattr(self.main_window, '_start_public_access'):
-            # 模拟选择服务并启动公网访问
-            self.main_window.service_table.selectRow(index)
-            self.main_window._start_public_access()
-    
-    def _on_stop_public_access(self, index):
-        """停止公网访问
-        
-        Args:
-            index: 服务索引
-        """
-        if hasattr(self.main_window, '_stop_public_access'):
-            # 模拟选择服务并停止公网访问
-            self.main_window.service_table.selectRow(index)
-            self.main_window._stop_public_access()
-    
-    def _on_view_logs(self, index):
-        """查看服务日志
-        
-        Args:
-            index: 服务索引
-        """
-        if hasattr(self.main_window, '_open_log_window'):
-            # 先选择对应的服务行
-            if hasattr(self.main_window, 'service_table'):
-                self.main_window.service_table.selectRow(index)
-            self.main_window._open_log_window()
-    
-    def show_message(self, title, message, icon=QSystemTrayIcon.Information, duration=3000):
+        """更新托盘菜单（线程安全）"""
+        # 使用线程锁保护服务列表访问
+        with self._services_lock:
+            # 获取服务列表
+            services = []
+            if hasattr(self.main_window, 'manager') and hasattr(self.main_window.manager, 'services'):
+                services = list(self.main_window.manager.services)  # 复制列表避免外部修改
+            elif hasattr(self.main_window, 'controller') and hasattr(self.main_window.controller.manager, 'services'):
+                # 新架构
+                services = list(self.main_window.controller.manager.services)  # 复制列表避免外部修改
+
+        # 获取事件回调
+        callbacks = self.event_handler.get_event_callbacks()
+
+        # 更新服务菜单
+        self.menu_builder.update_service_menu(services, callbacks)
+
+    def show_message(self, title: str, message: str, icon=QSystemTrayIcon.Information, duration=3000):
         """显示托盘消息
-        
+
         Args:
             title: 消息标题
             message: 消息内容
             icon: 消息图标
             duration: 显示持续时间（毫秒）
         """
-        if self.tray_icon:
-            self.tray_icon.showMessage(title, message, icon, duration)
-    
+        self.event_handler.show_message(title, message, icon, duration)
+
     def hide(self):
         """隐藏托盘图标"""
-        if self.tray_icon:
-            self.tray_icon.hide()
-    
+        self.event_handler.hide_tray_icon()
+
     def show(self):
         """显示托盘图标"""
-        if self.tray_icon:
-            self.tray_icon.show()
+        self.event_handler.show_tray_icon()
+
+    # ========== 向后兼容的公共接口 ==========
+
+    @property
+    def tray_icon(self):
+        """托盘图标（向后兼容）"""
+        return self.menu_builder.get_tray_icon()
+
+    @tray_icon.setter
+    def tray_icon(self, value):
+        """设置托盘图标"""
+        self.menu_builder.tray_icon = value
+
+    @property
+    def tray_menu(self):
+        """托盘菜单（向后兼容）"""
+        return self.menu_builder.get_tray_menu()
+
+    @property
+    def service_menu(self):
+        """服务菜单（向后兼容）"""
+        return self.menu_builder.get_service_menu()
+
+    def _on_restore_window(self):
+        """恢复窗口（向后兼容）"""
+        self.event_handler.on_restore_window()
+
+    def _on_exit(self):
+        """退出程序（向后兼容）"""
+        # 停止定时器
+        self.update_timer.stop()
+        self.event_handler.on_exit()
+
+    def _on_start_service(self, index: int):
+        """启动服务（向后兼容）"""
+        self.event_handler.start_service(index)
+
+    def _on_stop_service(self, index: int):
+        """停止服务（向后兼容）"""
+        self.event_handler.stop_service(index)
+
+    def _on_start_public_access(self, index: int):
+        """启动公网访问（向后兼容）"""
+        self.event_handler.start_public_access(index)
+
+    def _on_stop_public_access(self, index: int):
+        """停止公网访问（向后兼容）"""
+        self.event_handler.stop_public_access(index)
+
+    def _on_view_logs(self, index: int):
+        """查看服务日志（向后兼容）"""
+        self.event_handler.view_logs(index)
