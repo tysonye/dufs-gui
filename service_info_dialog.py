@@ -1,8 +1,7 @@
 """服务详情信息对话框"""
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-    QPushButton, QGroupBox, QGridLayout, QTextEdit,
-    QTableWidget, QTableWidgetItem, QHeaderView
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QGroupBox, QGridLayout, QTextEdit
 )
 from PyQt5.QtCore import Qt
 from service import DufsService, ServiceStatus
@@ -139,43 +138,65 @@ class ServiceInfoDialog(QDialog):
         layout.addLayout(button_layout)
     
     def _fill_data(self):
-        """填充数据"""
+        """填充数据（带异常保护）"""
         if not self.service:
             return
-        
-        # 基本信息
-        self.name_label.setText(self.service.name)
-        self.path_label.setText(self.service.serve_path)
-        self.port_label.setText(self.service.port)
-        self.bind_label.setText(self.service.bind if self.service.bind else "所有地址")
-        self.status_label.setText(self.service.status)
-        
-        # 根据状态设置颜色
-        if self.service.status == ServiceStatus.RUNNING:
-            self.status_label.setStyleSheet("color: #2ecc71; font-weight: bold;")
-        elif self.service.status == ServiceStatus.ERROR:
-            self.status_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
-        else:
-            self.status_label.setStyleSheet("color: #95a5a6;")
-        
-        # 权限信息
-        self.upload_label.setText("是" if self.service.allow_upload else "否")
-        self.delete_label.setText("是" if self.service.allow_delete else "否")
-        self.search_label.setText("是" if self.service.allow_search else "否")
-        self.archive_label.setText("是" if self.service.allow_archive else "否")
-        self.allow_all_label.setText("是" if self.service.allow_all else "否")
-        
-        # 认证信息
-        auth_user = getattr(self.service, 'auth_user', '')
-        if auth_user:
-            self.auth_status_label.setText("已启用")
-            self.auth_status_label.setStyleSheet("color: #2ecc71;")
-            self.auth_user_label.setText(auth_user)
-        else:
-            self.auth_status_label.setText("未启用")
-            self.auth_status_label.setStyleSheet("color: #95a5a6;")
-            self.auth_user_label.setText("-")
-        
-        # 访问地址
-        if hasattr(self, 'addr_text') and self.service.local_addr:
-            self.addr_text.setText(f"本地访问: {self.service.local_addr}")
+
+        try:
+            # 基本信息
+            self.name_label.setText(str(getattr(self.service, 'name', '未知')))
+            self.path_label.setText(str(getattr(self.service, 'serve_path', '')))
+            self.port_label.setText(str(getattr(self.service, 'port', '')))
+            bind = getattr(self.service, 'bind', '')
+            self.bind_label.setText(bind if bind else "所有地址")
+
+            # 服务状态
+            status = getattr(self.service, 'status', '未知')
+            self.status_label.setText(str(status))
+
+            # 根据状态设置颜色
+            if status == ServiceStatus.RUNNING:
+                self.status_label.setStyleSheet("color: #2ecc71; font-weight: bold;")
+            elif status == ServiceStatus.ERROR:
+                self.status_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+            else:
+                self.status_label.setStyleSheet("color: #95a5a6;")
+
+            # 权限信息
+            self.upload_label.setText("是" if getattr(self.service, 'allow_upload', False) else "否")
+            self.delete_label.setText("是" if getattr(self.service, 'allow_delete', False) else "否")
+            self.search_label.setText("是" if getattr(self.service, 'allow_search', False) else "否")
+            self.archive_label.setText("是" if getattr(self.service, 'allow_archive', False) else "否")
+            self.allow_all_label.setText("是" if getattr(self.service, 'allow_all', False) else "否")
+
+            # 认证信息
+            auth_user = getattr(self.service, 'auth_user', '')
+            if auth_user:
+                self.auth_status_label.setText("已启用")
+                self.auth_status_label.setStyleSheet("color: #2ecc71;")
+                self.auth_user_label.setText(str(auth_user))
+            else:
+                self.auth_status_label.setText("未启用")
+                self.auth_status_label.setStyleSheet("color: #95a5a6;")
+                self.auth_user_label.setText("-")
+
+            # 访问地址
+            if hasattr(self, 'addr_text'):
+                local_addr = getattr(self.service, 'local_addr', '')
+                public_url = getattr(self.service, 'public_url', '')
+                
+                address_text = []
+                if local_addr:
+                    address_text.append(f"本地访问: {local_addr}")
+                if public_url:
+                    address_text.append(f"公网访问: {public_url}")
+                
+                if address_text:
+                    self.addr_text.setText('\n'.join(address_text))
+                else:
+                    self.addr_text.setText("服务未运行，暂无访问地址")
+
+        except Exception as e:
+            print(f"[ServiceInfoDialog] 填充数据失败: {str(e)}")
+            import traceback
+            traceback.print_exc()

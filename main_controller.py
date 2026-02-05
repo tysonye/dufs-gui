@@ -1,5 +1,6 @@
 """主窗口控制器 - 负责业务逻辑和状态管理（协调者模式）"""
 
+import sys
 import threading
 import time
 from typing import Optional
@@ -12,6 +13,7 @@ from service_manager import ServiceManager
 from log_manager import LogManager
 from log_window import LogWindow
 from service_dialog import DufsServiceDialog
+from service_info_dialog import ServiceInfoDialog
 from constants import AppConstants
 from auto_saver import AutoSaver
 
@@ -413,14 +415,13 @@ class MainController(QObject):
             print(f"服务选择变更处理失败: {str(e)}")
 
     def _on_service_double_clicked(self, item):
-        """服务双击事件（使用延迟加载）"""
+        """服务双击事件"""
         row = item.row()
         if 0 <= row < len(self.manager.services):
             service = self.manager.services[row]
-            # 延迟导入 ServiceInfoDialog，减少启动时间
-            with LazyImport('service_info_dialog') as sid:
-                dialog = sid.ServiceInfoDialog(parent=self.view, service=service)
-                dialog.exec_()
+            # 直接使用已导入的 ServiceInfoDialog
+            dialog = ServiceInfoDialog(parent=self.view, service=service)
+            dialog.exec_()
 
     def _show_service_context_menu(self, position):
         """显示服务上下文菜单"""

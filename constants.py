@@ -432,7 +432,11 @@ def get_base_dir():
 def get_lib_path():
     """获取 lib/_internal 文件夹路径"""
     base_dir = get_base_dir()
-    # 优先检查 _internal 文件夹（PyInstaller 6.x 默认）
+    # 优先检查 _internal/lib 文件夹（PyInstaller 打包后的工具目录）
+    internal_lib_path = os.path.join(base_dir, '_internal', 'lib')
+    if os.path.exists(internal_lib_path):
+        return internal_lib_path
+    # 然后检查 _internal 文件夹（PyInstaller 6.x 默认）
     internal_path = os.path.join(base_dir, '_internal')
     if os.path.exists(internal_path):
         return internal_path

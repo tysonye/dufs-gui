@@ -27,8 +27,9 @@ def build():
         "--onedir",                    # 文件夹模式
         "--windowed",                  # 无控制台窗口
         "--icon=icon.ico",
-        "--add-data=dufs.exe;.",       # 包含 dufs.exe
-        "--add-data=icon.ico;.",       # 包含 icon.ico
+        "--add-data=dufs.exe;lib",       # 包含 dufs.exe 到 lib 目录
+        "--add-data=cloudflared.exe;lib",       # 包含 cloudflared.exe 到 lib 目录
+        "--add-data=icon.ico;lib",       # 包含 icon.ico 到 lib 目录
         "--collect-all=PyQt5",         # 收集 PyQt5 所有文件
         "--distpath=dist",             # 输出目录
         "--workpath=build",            # 临时构建目录
@@ -51,8 +52,11 @@ def build():
         print(f"\n目录结构:")
         print(f"  DufsGUI.exe          - 主程序")
         print(f"  _internal/           - 依赖文件夹")
-        print(f"    ├── dufs.exe")
-        print(f"    ├── icon.ico")
+        print(f"    ├── lib/           - 工具文件目录")
+        print(f"    │   ├── dufs.exe")
+        print(f"    │   ├── cloudflared.exe")
+        print(f"    │   ├── icon.ico")
+        print(f"    │   └── ...")
         print(f"    └── ...")
     else:
         print(f"\n打包失败，返回码: {result.returncode}")
