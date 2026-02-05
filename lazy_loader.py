@@ -105,8 +105,8 @@ class LazyImport:
 # 托盘管理器延迟加载器
 tray_manager_loader = LazyLoader('tray_manager', 'TrayManager')
 
-# Cloudflare下载器延迟加载器
-cloudflared_downloader_loader = LazyLoader('cloudflared_downloader')
+# Cloudflare隧道延迟加载器（包含下载功能）
+cloudflare_tunnel_loader = LazyLoader('cloudflare_tunnel')
 
 # 启动管理器延迟加载器
 startup_manager_loader = LazyLoader('startup_manager')

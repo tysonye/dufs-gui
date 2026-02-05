@@ -130,7 +130,7 @@ class ServiceManager:
         for host in check_hosts:
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    # 移除 SO_REUSEADDR，使用标准端口检查方式
                     s.settimeout(0.5)
                     s.bind((host, port))
             except OSError as e:

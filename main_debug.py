@@ -83,8 +83,8 @@ try:
     import constants
     print("constants 导入成功")
     
-    import cloudflared_downloader
-    print("cloudflared_downloader 导入成功")
+    import cloudflare_tunnel
+    print("cloudflare_tunnel 导入成功")
     
     # 导入其他模块
     import config_manager

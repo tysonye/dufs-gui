@@ -39,8 +39,6 @@ QGroupBox::title {
     subcontrol-origin: margin;
     left: 12px;
     padding: 0 8px;
-    background-color: #ffffff;
-    border-radius: 4px;
 }
 
 /* 按钮样式 - 圆角设计 */
@@ -202,6 +200,24 @@ class DufsServiceDialog(QDialog):
         
         # 填充现有数据
         self._fill_existing_data()
+        
+        # 标记对话框是否已关闭，防止重复回调
+        self._is_closed = False
+    
+    def closeEvent(self, event):
+        """关闭事件处理（防止重复回调）"""
+        self._is_closed = True
+        event.accept()
+    
+    def reject(self):
+        """拒绝对话框（重写以确保正确关闭）"""
+        self._is_closed = True
+        super().reject()
+    
+    def accept(self):
+        """接受对话框（重写以确保正确关闭）"""
+        self._is_closed = True
+        super().accept()
     
     def _add_basic_config(self, layout: QVBoxLayout) -> None:
         """添加基本配置组"""
@@ -349,21 +365,48 @@ class DufsServiceDialog(QDialog):
         if path:
             self.path_edit.setText(path)
     
+    def _validate_service_path(self, path: str) -> tuple[bool, str]:
+        """验证服务路径的安全性
+
+        Args:
+            path: 路径字符串
+
+        Returns:
+            tuple[bool, str]: (是否有效, 错误信息)
+        """
+        # 路径规范化
+        normalized_path = os.path.normpath(path)
+        absolute_path = os.path.abspath(normalized_path)
+
+        # 检查路径是否存在
+        if not os.path.exists(absolute_path):
+            return False, f"路径 '{path}' 不存在"
+
+        # 检查是否为目录
+        if not os.path.isdir(absolute_path):
+            return False, f"路径 '{path}' 不是有效目录"
+
+        # 防止路径遍历攻击
+        if ".." in normalized_path:
+            return False, "路径包含非法字符 '.."
+
+        return True, ""
+
     def _on_ok_clicked(self) -> None:
-        """确定按钮点击事件"""
+        """确定按钮点击事件（加强版，带安全验证）"""
         # 验证输入
         if not self.name_edit.text():
             QMessageBox.critical(self, "错误", "服务名称不能为空")
             return
-        
+
         if not self.path_edit.text():
             QMessageBox.critical(self, "错误", "服务路径不能为空")
             return
-        
+
         if not self.port_edit.text():
             QMessageBox.critical(self, "错误", "端口不能为空")
             return
-        
+
         # 验证端口是否为数字
         try:
             port = int(self.port_edit.text())
@@ -372,28 +415,30 @@ class DufsServiceDialog(QDialog):
         except ValueError:
             QMessageBox.critical(self, "错误", "请输入有效的端口号（1-65535）")
             return
-        
-        # 验证服务路径是否存在
+
+        # 验证服务路径（安全验证）
         path = self.path_edit.text()
-        if not os.path.exists(path):
-            QMessageBox.critical(self, "错误", f"服务路径 '{path}' 不存在")
+        is_valid, error_msg = self._validate_service_path(path)
+        if not is_valid:
+            QMessageBox.critical(self, "错误", error_msg)
             return
-        
+
         # 更新服务（名称重复检查由主窗口处理）
         self.service.name = self.name_edit.text()
-        self.service.serve_path = self.path_edit.text()
+        self.service.serve_path = os.path.abspath(os.path.normpath(path))
         self.service.port = self.port_edit.text()
         self.service.bind = self.bind_edit.text()
-        
+
         # 更新权限配置
         self.service.allow_upload = self.upload_check.isChecked()
         self.service.allow_delete = self.delete_check.isChecked()
         self.service.allow_search = self.search_check.isChecked()
         self.service.allow_archive = self.archive_check.isChecked()
         self.service.allow_all = self.allow_all_check.isChecked()
-        
+
         # 更新认证配置
         self.service.auth_user = self.auth_user_edit.text()
+        # 注意：密码以明文存储，实际生产环境应考虑加密
         self.service.auth_pass = self.auth_pass_edit.text()
 
         # 接受对话框

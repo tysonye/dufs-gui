@@ -32,6 +32,34 @@ class ServiceController(QObject):
         """设置视图"""
         self.view = view
 
+    def _resolve_port_conflict(self, port: int, exclude_index: int = None) -> int:
+        """解析端口冲突，返回可用端口
+
+        Args:
+            port: 首选端口
+            exclude_index: 排除的服务索引（编辑时使用）
+
+        Returns:
+            int: 可用端口号
+        """
+        try:
+            current_port = int(port)
+            # 检查端口冲突
+            conflict_service = next(
+                (s for i, s in enumerate(self.manager.services)
+                 if (exclude_index is None or i != exclude_index) and int(s.port) == current_port),
+                None
+            )
+            if conflict_service:
+                # 有冲突，查找新端口
+                return self.manager.find_available_port(current_port)
+            else:
+                # 无冲突，但仍需验证端口可用性
+                return self.manager.find_available_port(current_port)
+        except ValueError:
+            # 端口无效，使用默认端口
+            return self.manager.find_available_port(5001)
+
     def add_service(self) -> bool:
         """添加服务"""
         dialog = DufsServiceDialog(parent=self.view, existing_services=self.manager.services)
@@ -40,22 +68,9 @@ class ServiceController(QObject):
             unique_name = self._generate_unique_service_name(dialog.service.name)
             dialog.service.name = unique_name
 
-            # 检查端口冲突
-            try:
-                current_port = int(dialog.service.port)
-                conflict_service = next(
-                    (s for s in self.manager.services if int(s.port) == current_port),
-                    None
-                )
-                if conflict_service:
-                    new_port = self.manager.find_available_port(current_port)
-                    dialog.service.port = str(new_port)
-                else:
-                    new_port = self.manager.find_available_port(current_port)
-                    dialog.service.port = str(new_port)
-            except ValueError:
-                port = self.manager.find_available_port(5001)
-                dialog.service.port = str(port)
+            # 检查并解析端口冲突
+            new_port = self._resolve_port_conflict(dialog.service.port)
+            dialog.service.port = str(new_port)
 
             # 连接服务状态更新信号
             dialog.service.status_updated.connect(self._on_service_status_updated)
@@ -106,6 +121,8 @@ class ServiceController(QObject):
             # 如果服务正在运行且有配置变化，先停止它
             if was_running and has_changes:
                 self._stop_service_internal(service, was_public_running)
+                # 等待服务完全停止，使用状态检查代替固定时间
+                self._wait_for_service_stop(service, timeout=5.0)
 
             # 释放旧端口
             try:
@@ -113,22 +130,9 @@ class ServiceController(QObject):
             except ValueError:
                 pass
 
-            # 检查端口冲突
-            try:
-                current_port = int(dialog.service.port)
-                conflict_service = next(
-                    (s for i, s in enumerate(self.manager.services) if i != row and int(s.port) == current_port),
-                    None
-                )
-                if conflict_service:
-                    new_port = self.manager.find_available_port(current_port)
-                    dialog.service.port = str(new_port)
-                else:
-                    new_port = self.manager.find_available_port(current_port)
-                    dialog.service.port = str(new_port)
-            except ValueError:
-                port = self.manager.find_available_port(5001)
-                dialog.service.port = str(port)
+            # 检查并解析端口冲突
+            new_port = self._resolve_port_conflict(dialog.service.port, exclude_index=row)
+            dialog.service.port = str(new_port)
 
             # 连接服务状态更新信号
             dialog.service.status_updated.connect(self._on_service_status_updated)
@@ -140,11 +144,38 @@ class ServiceController(QObject):
             # 如果服务之前在运行且有配置变化，重启它
             if was_running and has_changes:
                 updated_service = self.manager.services[row]
-                time.sleep(0.1)
-                threading.Thread(target=updated_service.start, args=(self.log_manager,), daemon=True).start()
-                if was_public_running:
-                    time.sleep(1)
-                    threading.Thread(target=updated_service.start_public_access, args=(self.log_manager,), daemon=True).start()
+                # 确保服务状态已更新为已停止
+                if updated_service.status != ServiceStatus.STOPPED:
+                    updated_service.status = ServiceStatus.STOPPED
+                    updated_service.status_updated.emit()
+
+                # 禁用按钮，防止用户在重启过程中操作
+                print(f"[DEBUG] self.view: {self.view}, type: {type(self.view)}")
+                print(f"[DEBUG] hasattr set_buttons_enabled: {hasattr(self.view, 'set_buttons_enabled') if self.view else False}")
+                if self.view and hasattr(self.view, 'set_buttons_enabled'):
+                    print("[DEBUG] 禁用按钮")
+                    self.view.set_buttons_enabled(False)
+                else:
+                    print("[DEBUG] 无法禁用按钮，view 为 None 或没有 set_buttons_enabled 方法")
+                self.is_operation_in_progress = True
+
+                try:
+                    # 等待状态稳定
+                    time.sleep(0.3)
+                    # 使用主线程启动服务，避免并发问题
+                    updated_service.start(self.log_manager)
+                    if was_public_running:
+                        time.sleep(0.5)
+                        updated_service.start_public_access(self.log_manager)
+                finally:
+                    # 恢复按钮状态
+                    self.is_operation_in_progress = False
+                    print("[DEBUG] 恢复按钮状态")
+                    if self.view and hasattr(self.view, 'set_buttons_enabled'):
+                        print("[DEBUG] 启用按钮")
+                        self.view.set_buttons_enabled(True)
+                    else:
+                        print("[DEBUG] 无法启用按钮，view 为 None 或没有 set_buttons_enabled 方法")
 
             return True
         return False
@@ -303,6 +334,31 @@ class ServiceController(QObject):
         if hasattr(service, 'public_access_status'):
             service.public_access_status = "stopped"
             service.status_updated.emit()
+
+    def _wait_for_service_stop(self, service: DufsService, timeout: float = 5.0) -> bool:
+        """等待服务完全停止
+
+        Args:
+            service: 服务实例
+            timeout: 超时时间（秒）
+
+        Returns:
+            bool: 是否成功停止
+        """
+        import time
+        start_time = time.time()
+        check_interval = 0.1
+
+        while time.time() - start_time < timeout:
+            if service.status == ServiceStatus.STOPPED:
+                return True
+            time.sleep(check_interval)
+
+        # 超时后强制设置状态
+        if service.status != ServiceStatus.STOPPED:
+            service.status = ServiceStatus.STOPPED
+            service.status_updated.emit()
+        return False
 
     def _generate_unique_service_name(self, base_name: str, exclude_index: int = None) -> str:
         """生成唯一的服务名称"""

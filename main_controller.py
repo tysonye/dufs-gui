@@ -230,8 +230,8 @@ class MainController(QObject):
             return
 
         # 先检查并下载 cloudflared（使用延迟加载）
-        with LazyImport('cloudflared_downloader') as cd:
-            if not cd.check_and_download_cloudflared(self.view):
+        with LazyImport('cloudflare_tunnel') as ct:
+            if not ct.check_and_download_cloudflared(self.view):
                 return
 
         # 启动进度条

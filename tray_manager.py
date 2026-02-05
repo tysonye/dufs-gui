@@ -4,7 +4,7 @@ import threading
 from PyQt5.QtWidgets import QSystemTrayIcon
 from PyQt5.QtCore import QTimer
 
-from tray_menu_builder import TrayMenuBuilder
+from tray_controller import TrayMenuBuilder
 from tray_event_handler import TrayEventHandler
 
 

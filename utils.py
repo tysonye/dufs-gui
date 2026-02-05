@@ -2,6 +2,7 @@
 # pyright: reportAny=false
 
 import socket
+import errno
 
 
 def get_local_ip() -> str:
@@ -50,3 +51,57 @@ def get_local_ip() -> str:
     
     # 最后手段：返回127.0.0.1
     return "127.0.0.1"
+
+
+def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
+    """检查端口是否可用（启动前检测）
+
+    Args:
+        port: 端口号
+        host: 绑定地址
+
+    Returns:
+        bool: 端口是否可用
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.settimeout(1.0)
+            result = s.bind((host, port))
+            return True
+    except socket.error as e:
+        if e.errno == errno.EADDRINUSE:
+            return False
+        # 其他错误（如权限不足）也视为不可用
+        return False
+    except Exception:
+        return False
+
+
+def check_port_conflict(port: int, host: str = "0.0.0.0") -> tuple[bool, str]:
+    """检查端口冲突并返回详细信息
+
+    Args:
+        port: 端口号
+        host: 绑定地址
+
+    Returns:
+        tuple[bool, str]: (是否可用, 详细信息)
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.settimeout(1.0)
+            s.bind((host, port))
+            return True, f"端口 {port} 可用"
+    except socket.error as e:
+        if e.errno == errno.EADDRINUSE:
+            return False, f"端口 {port} 已被占用"
+        elif e.errno == errno.EACCES:
+            return False, f"端口 {port} 需要管理员权限"
+        elif e.errno == errno.EADDRNOTAVAIL:
+            return False, f"地址 {host} 不可用"
+        else:
+            return False, f"端口 {port} 检查失败: {str(e)}"
+    except Exception as e:
+        return False, f"端口检查异常: {str(e)}"

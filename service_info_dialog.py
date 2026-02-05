@@ -9,13 +9,29 @@ from service import DufsService, ServiceStatus
 
 
 class ServiceInfoDialog(QDialog):
-    """服务详情信息对话框"""
+    """服务详情信息对话框（加强版，带生命周期管理）"""
     
     def __init__(self, parent=None, service: DufsService = None):
         super().__init__(parent)
         self.service = service
+        self._is_closed = False  # 标记对话框是否已关闭
         self._setup_ui()
         self._fill_data()
+    
+    def closeEvent(self, event):
+        """关闭事件处理（防止重复回调）"""
+        self._is_closed = True
+        event.accept()
+    
+    def reject(self):
+        """拒绝对话框（重写以确保正确关闭）"""
+        self._is_closed = True
+        super().reject()
+    
+    def accept(self):
+        """接受对话框（重写以确保正确关闭）"""
+        self._is_closed = True
+        super().accept()
     
     def _setup_ui(self):
         """设置UI"""

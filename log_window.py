@@ -3,7 +3,7 @@
 from typing import TYPE_CHECKING
 
 from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, 
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton,
     QComboBox, QTabWidget, QPlainTextEdit
 )
 
@@ -12,6 +12,19 @@ if TYPE_CHECKING:
     from PyQt5.QtWidgets import (
         QLineEdit, QComboBox, QTabWidget, QPlainTextEdit
     )
+
+# 导入日志级别枚举
+try:
+    from log_manager import LogLevel
+except ImportError:
+    # 如果导入失败，定义一个兼容的枚举
+    from enum import Enum, auto
+    class LogLevel(Enum):
+        DEBUG = auto()
+        INFO = auto()
+        WARNING = auto()
+        ERROR = auto()
+        CRITICAL = auto()
 
 
 class LogWindow(QMainWindow):
@@ -204,12 +217,17 @@ class LogWindow(QMainWindow):
         if show_line:
             log_widget.appendPlainText(message)  # type: ignore
     
-    def add_log(self, message: str, error: bool = False) -> None:
-        """添加日志条目到默认标签页"""
+    def add_log(self, message: str, level=None) -> None:
+        """添加日志条目到默认标签页（新版支持LogLevel）
+
+        Args:
+            message: 日志消息
+            level: 日志级别（LogLevel枚举或布尔值，兼容旧代码）
+        """
         # 直接调用 _add_log_ui 方法，确保在UI线程中执行
-        self._add_log_ui(message, error)
-    
-    def _add_log_ui(self, message: str, error: bool = False) -> None:
+        self._add_log_ui(message, level)
+
+    def _add_log_ui(self, message: str, level=None) -> None:
         """在UI线程中添加日志条目"""
         # 添加到当前活动的标签页，如果没有则创建默认标签页
         if self.log_tabs.count() == 0:
