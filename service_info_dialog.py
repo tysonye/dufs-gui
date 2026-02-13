@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 from service import DufsService, ServiceStatus
+from constants import DIALOG_STYLESHEET
 
 
 class ServiceInfoDialog(QDialog):
@@ -14,6 +15,7 @@ class ServiceInfoDialog(QDialog):
         super().__init__(parent)
         self.service = service
         self._is_closed = False  # 标记对话框是否已关闭
+        self.setStyleSheet(DIALOG_STYLESHEET)
         self._setup_ui()
         self._fill_data()
     

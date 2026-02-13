@@ -29,10 +29,10 @@ def load_config() -> dict:
                             config = json.load(f)
                         print("从备份恢复配置成功")
                         return config
-                    except Exception as e2:
+                    except (json.JSONDecodeError, IOError, OSError) as e2:
                         print(f"从备份恢复失败: {str(e2)}")
                 return {"services": [], "app_state": {}}
-    except Exception as e:
+    except (IOError, OSError) as e:
         print(f"加载配置失败: {str(e)}")
     return {"services": [], "app_state": {}}
 
@@ -72,7 +72,7 @@ def save_config(config_data: dict) -> bool:
                     backup_file = f"{CONFIG_FILE}.backup"
                     try:
                         shutil.copy2(CONFIG_FILE, backup_file)
-                    except Exception as e:
+                    except (IOError, OSError) as e:
                         print(f"备份配置失败: {str(e)}")
 
                 # 原子重命名（Windows: 先删除再重命名）
@@ -88,16 +88,16 @@ def save_config(config_data: dict) -> bool:
 
                 return True
 
-            except Exception as e:
+            except (IOError, OSError) as e:
                 # 清理临时文件
                 try:
                     if os.path.exists(temp_path):
                         os.remove(temp_path)
-                except:
+                except (IOError, OSError):
                     pass
                 raise e
 
-        except Exception as e:
+        except (IOError, OSError) as e:
             print(f"保存配置失败: {str(e)}")
             return False
 

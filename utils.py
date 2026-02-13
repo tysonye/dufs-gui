@@ -3,6 +3,10 @@
 
 import socket
 import errno
+import logging
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 
 def get_local_ip() -> str:
@@ -19,9 +23,9 @@ def get_local_ip() -> str:
             ip = s.getsockname()[0]
             if ip and ip != "127.0.0.1":
                 return ip
-    except Exception:
-        pass
-    
+    except (socket.error, OSError) as e:
+        logger.debug(f"方法1获取IP失败: {str(e)}")
+
     try:
         # 方法2：获取所有网络接口
         import netifaces
@@ -37,19 +41,20 @@ def get_local_ip() -> str:
                     # 排除回环地址和链路本地地址
                     if ip != '127.0.0.1' and not ip.startswith('169.254'):
                         return ip
-    except ImportError:
-        pass
-    
+    except ImportError as e:
+        logger.debug(f"netifaces模块未安装: {str(e)}")
+
     # 方法3：尝试解析主机名
     try:
         hostname = socket.gethostname()
         ip = socket.gethostbyname(hostname)
         if ip and ip != "127.0.0.1":
             return ip
-    except Exception:
-        pass
-    
+    except (socket.error, OSError) as e:
+        logger.debug(f"方法3获取IP失败: {str(e)}")
+
     # 最后手段：返回127.0.0.1
+    logger.warning("所有方法获取IP均失败，返回127.0.0.1")
     return "127.0.0.1"
 
 
@@ -74,7 +79,7 @@ def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
             return False
         # 其他错误（如权限不足）也视为不可用
         return False
-    except Exception:
+    except (OSError, ValueError):
         return False
 
 
@@ -103,5 +108,5 @@ def check_port_conflict(port: int, host: str = "0.0.0.0") -> tuple[bool, str]:
             return False, f"地址 {host} 不可用"
         else:
             return False, f"端口 {port} 检查失败: {str(e)}"
-    except Exception as e:
+    except (OSError, ValueError) as e:
         return False, f"端口检查异常: {str(e)}"

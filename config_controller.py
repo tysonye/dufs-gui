@@ -7,25 +7,28 @@ from PyQt5.QtCore import QTimer
 from config_manager import ConfigManager
 from service import DufsService, ServiceStatus
 from service_manager import ServiceManager
+from log_manager import LogManager
 
 
 class ConfigController:
     """配置控制器 - 负责配置管理和自动恢复"""
 
-    def __init__(self, manager: ServiceManager, status_callback: Optional[Callable] = None):
+    def __init__(self, manager: ServiceManager, status_callback: Optional[Callable] = None, log_manager: Optional[LogManager] = None):
         """
         初始化配置控制器
 
         Args:
             manager: 服务管理器实例
             status_callback: 状态更新回调函数
+            log_manager: 日志管理器实例
         """
         self.manager = manager
         self.config_manager = ConfigManager()
         self.status_callback = status_callback
+        self.log_manager = log_manager
 
     def load_config(self) -> bool:
-        """加载配置
+        """加载配置（增强版，带错误恢复）
 
         Returns:
             bool: 加载是否成功
@@ -33,6 +36,15 @@ class ConfigController:
         try:
             services_config = self.config_manager.get_services()
             app_state = self.config_manager.get_app_state()
+
+            # 验证配置数据类型
+            if not isinstance(services_config, list):
+                print(f"[配置加载] 服务配置格式错误，期望列表类型，实际为 {type(services_config)}")
+                services_config = []
+
+            if not isinstance(app_state, dict):
+                print(f"[配置加载] 应用状态格式错误，期望字典类型，实际为 {type(app_state)}")
+                app_state = {}
 
             # 检查上次是否正常退出
             normal_exit = app_state.get('normal_exit', True)
@@ -46,19 +58,28 @@ class ConfigController:
                 print(f"[自动恢复] 检测到异常退出，准备恢复服务。normal_exit={normal_exit}, time_since_last_exit={time_since_last_exit:.0f}秒")
 
             for service_config in services_config:
-                service = DufsService(
-                    name=str(service_config.get('name', '默认服务')),
-                    serve_path=str(service_config.get('serve_path', '.')),
-                    port=str(service_config.get('port', '5000')),
-                    bind=str(service_config.get('bind', ''))
-                )
-                service.allow_upload = service_config.get('allow_upload', False)
-                service.allow_delete = service_config.get('allow_delete', False)
-                service.allow_search = service_config.get('allow_search', False)
-                service.allow_archive = service_config.get('allow_archive', False)
-                service.allow_all = service_config.get('allow_all', False)
-                service.auth_user = service_config.get('auth_user', '')
-                service.auth_pass = service_config.get('auth_pass', '')
+                # 验证服务配置类型
+                if not isinstance(service_config, dict):
+                    print(f"[配置加载] 跳过无效的服务配置项: {service_config}")
+                    continue
+
+                try:
+                    service = DufsService(
+                        name=str(service_config.get('name', '默认服务')),
+                        serve_path=str(service_config.get('serve_path', '.')),
+                        port=str(service_config.get('port', '5000')),
+                        bind=str(service_config.get('bind', ''))
+                    )
+                    service.allow_upload = service_config.get('allow_upload', False)
+                    service.allow_delete = service_config.get('allow_delete', False)
+                    service.allow_search = service_config.get('allow_search', False)
+                    service.allow_archive = service_config.get('allow_archive', False)
+                    service.allow_all = service_config.get('allow_all', False)
+                    service.auth_user = service_config.get('auth_user', '')
+                    service.auth_pass = service_config.get('auth_pass', '')
+                except Exception as e:
+                    print(f"[配置加载] 创建服务失败: {str(e)}")
+                    continue
 
                 # 连接服务状态更新信号
                 if self.status_callback:
@@ -79,7 +100,8 @@ class ConfigController:
                         new_port = self.manager.find_available_port(current_port)
                         service.port = str(new_port)
                     else:
-                        self.manager._allocated_ports.add(current_port)
+                        # 通过 port_service 分配端口
+                        self.manager.port_service.allocate_port(current_port)
                 except ValueError:
                     port = self.manager.find_available_port(5001)
                     service.port = str(port)
@@ -159,9 +181,8 @@ class ConfigController:
             if service.status == ServiceStatus.STOPPED:
                 print(f"[自动恢复] 正在启动服务: {service.name}")
                 import threading
-                from log_manager import LogManager
-                # 注意：这里需要传入view来创建LogManager，实际使用时需要调整
-                threading.Thread(target=service.start, args=(None,), daemon=True).start()
+                # 使用传入的 log_manager 来记录日志
+                threading.Thread(target=service.start, args=(self.log_manager,), daemon=True).start()
 
                 # 如果需要，同时启动公网访问
                 if public_auto_start:
@@ -173,7 +194,7 @@ class ConfigController:
                             wait_count += 1
                             if service.status == ServiceStatus.RUNNING:
                                 print(f"[自动恢复] 正在启动公网访问: {service.name}")
-                                threading.Thread(target=service.start_public_access, args=(None,), daemon=True).start()
+                                threading.Thread(target=service.start_public_access, args=(self.log_manager,), daemon=True).start()
                                 return
 
                     threading.Thread(target=start_public_when_ready, daemon=True).start()

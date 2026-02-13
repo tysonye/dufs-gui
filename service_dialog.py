@@ -8,158 +8,14 @@
 
 import os
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
-    QPushButton, QGroupBox, QGridLayout, QCheckBox, QFileDialog, 
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QPushButton, QGroupBox, QGridLayout, QCheckBox, QFileDialog,
     QMessageBox
 )
 from PyQt5.QtCore import Qt
 from service import DufsService
-
-# 对话框样式表 - 现代化设计
-DIALOG_STYLESHEET = """
-/* 现代化对话框样式 */
-QDialog {
-    background-color: #f8f9fa;
-    font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
-}
-
-/* 分组框样式 - 圆角卡片设计 */
-QGroupBox {
-    font-weight: 600;
-    font-size: 14px;
-    color: #2c3e50;
-    border: 1px solid #dee2e6;
-    border-radius: 8px;
-    margin-top: 12px;
-    padding-top: 15px;
-    background-color: #ffffff;
-}
-
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 12px;
-    padding: 0 8px;
-}
-
-/* 按钮样式 - 圆角设计 */
-QPushButton {
-    background-color: #4a6fa5;
-    color: white;
-    border: none;
-    border-radius: 4px;
-    padding: 6px 16px;
-    font-size: 13px;
-    font-weight: 500;
-    min-width: 80px;
-    min-height: 30px;
-}
-
-QPushButton:hover {
-    background-color: #3a5a8a;
-}
-
-QPushButton:pressed {
-    background-color: #2a4a7a;
-}
-
-/* 取消按钮使用中性色 */
-QPushButton#CancelBtn {
-    background-color: #6c757d;
-}
-QPushButton#CancelBtn:hover {
-    background-color: #5a6268;
-}
-
-/* 操作按钮 - 主要操作使用强调色 */
-QPushButton#ActionBtn {
-    background-color: #007bff;
-}
-QPushButton#ActionBtn:hover {
-    background-color: #0069d9;
-}
-
-/* 操作按钮 - 危险操作使用警示色 */
-QPushButton#DangerBtn {
-    background-color: #dc3545;
-}
-QPushButton#DangerBtn:hover {
-    background-color: #c82333;
-}
-
-/* 输入框样式 - 现代化设计 */
-QLineEdit {
-    border: 1px solid #ced4da;
-    border-radius: 4px;
-    padding: 6px 10px;
-    background-color: #ffffff;
-    selection-background-color: #4a6fa5;
-    selection-color: white;
-    min-height: 28px;
-}
-
-QLineEdit:focus {
-    border-color: #4a6fa5;
-}
-
-/* 验证失败的输入框 */
-QLineEdit[validation="failed"] {
-    border-color: #dc3545;
-    background-color: #fff5f5;
-}
-
-QLineEdit[validation="failed"]::placeholder {
-    color: #dc3545;
-}
-
-/* 标签样式 */
-QLabel {
-    color: #495057;
-    font-size: 13px;
-}
-
-QLabel#Required {
-    color: #dc3545;
-    font-weight: 500;
-}
-
-/* 复选框样式 - 现代化 */
-QCheckBox {
-    spacing: 8px;
-    font-size: 13px;
-    color: #2c3e50;
-}
-
-QCheckBox::indicator {
-    width: 18px;
-    height: 18px;
-    border-radius: 4px;
-    border: 1px solid #adb5bd;
-    background-color: #ffffff;
-}
-
-QCheckBox::indicator:hover {
-    border-color: #4a6fa5;
-}
-
-QCheckBox::indicator:checked {
-    background-color: #4a6fa5;
-    border-color: #4a6fa5;
-    image: url(:/qt-project.org/styles/commonstyle/images/checkbox-check.png);
-}
-
-QCheckBox::indicator:checked:hover {
-    background-color: #3a5a8a;
-    border-color: #3a5a8a;
-}
-
-/* 提示文本 */
-QLabel#TipLabel {
-    color: #6c757d;
-    font-size: 12px;
-    font-style: italic;
-    margin-top: 4px;
-}
-"""
+from constants import DIALOG_STYLESHEET
+from crypto_utils import encrypt_password, decrypt_password
 
 
 
@@ -168,11 +24,9 @@ class DufsServiceDialog(QDialog):
     
     def __init__(self, parent: QDialog | None = None, service: DufsService | None = None, edit_index: int | None = None, existing_services: list[DufsService] | None = None):
         super().__init__(parent)
-        # 应用对话框样式表
-        self.setStyleSheet(DIALOG_STYLESHEET)
-        
+        # 应用主界面风格
         self.setWindowTitle("服务配置")
-        self.setMinimumSize(750, 550)
+        self.setMinimumSize(700, 500)
         # 去掉标题栏的问号按钮
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         
@@ -229,14 +83,52 @@ class DufsServiceDialog(QDialog):
         # 服务名称
         basic_layout.addWidget(QLabel("服务名称:"), 0, 0)
         self.name_edit: QLineEdit = QLineEdit()
+        self.name_edit.setStyleSheet("""
+        QLineEdit {
+            background: white;
+            border: 1px solid #ddd;
+            padding: 4px 6px;
+            border-radius: 4px;
+            min-height: 16px !important;
+            font-size: 12px;
+        }
+        """)
         basic_layout.addWidget(self.name_edit, 0, 1)
         
         # 服务路径
         basic_layout.addWidget(QLabel("服务路径:"), 1, 0)
         path_layout = QHBoxLayout()
         self.path_edit: QLineEdit = QLineEdit()
+        self.path_edit.setStyleSheet("""
+        QLineEdit {
+            background: white;
+            border: 1px solid #ddd;
+            padding: 4px 6px;
+            border-radius: 4px;
+            min-height: 16px !important;
+            font-size: 12px;
+        }
+        """)
         path_layout.addWidget(self.path_edit)
+        # 浏览按钮
         browse_btn = QPushButton("浏览")
+        browse_btn.setStyleSheet("""
+        QPushButton {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 4px 12px;
+            border-radius: 4px;
+            min-height: 16px;
+            font-size: 12px;
+        }
+        QPushButton:hover {
+            background: #45a049;
+        }
+        QPushButton:pressed {
+            background: #3d8b40;
+        }
+        """)
         _ = browse_btn.clicked.connect(self._browse_path)
         path_layout.addWidget(browse_btn)
         basic_layout.addLayout(path_layout, 1, 1)
@@ -244,12 +136,32 @@ class DufsServiceDialog(QDialog):
         # 端口
         basic_layout.addWidget(QLabel("端口:"), 2, 0)
         self.port_edit: QLineEdit = QLineEdit()
+        self.port_edit.setStyleSheet("""
+        QLineEdit {
+            background: white;
+            border: 1px solid #ddd;
+            padding: 4px 6px;
+            border-radius: 4px;
+            min-height: 16px !important;
+            font-size: 12px;
+        }
+        """)
         basic_layout.addWidget(self.port_edit, 2, 1)
         
         # 绑定地址
         basic_layout.addWidget(QLabel("绑定地址:"), 3, 0)
         self.bind_edit: QLineEdit = QLineEdit()
         self.bind_edit.setPlaceholderText("留空表示绑定所有地址")
+        self.bind_edit.setStyleSheet("""
+        QLineEdit {
+            background: white;
+            border: 1px solid #ddd;
+            padding: 4px 6px;
+            border-radius: 4px;
+            min-height: 16px !important;
+            font-size: 12px;
+        }
+        """)
         basic_layout.addWidget(self.bind_edit, 3, 1)
         
         # 将basic_group添加到传入的layout中
@@ -259,32 +171,80 @@ class DufsServiceDialog(QDialog):
         """添加权限配置组"""
         perm_group = QGroupBox("权限配置")
         perm_layout = QHBoxLayout(perm_group)
-        perm_layout.setContentsMargins(15, 15, 15, 15)
+        perm_layout.setContentsMargins(15, 10, 15, 10)
         perm_layout.setSpacing(20)
 
         # 允许上传
         self.upload_check: QCheckBox = QCheckBox("允许上传")
+        self.upload_check.setStyleSheet("""
+        QCheckBox {
+            font-size: 12px;
+        }
+        QCheckBox::indicator {
+            width: 14px;
+            height: 14px;
+        }
+        """)
         perm_layout.addWidget(self.upload_check)
 
         # 允许删除
         self.delete_check: QCheckBox = QCheckBox("允许删除")
+        self.delete_check.setStyleSheet("""
+        QCheckBox {
+            font-size: 12px;
+        }
+        QCheckBox::indicator {
+            width: 14px;
+            height: 14px;
+        }
+        """)
         perm_layout.addWidget(self.delete_check)
 
         # 允许搜索
         self.search_check: QCheckBox = QCheckBox("允许搜索")
         self.search_check.setChecked(True)
+        self.search_check.setStyleSheet("""
+        QCheckBox {
+            font-size: 12px;
+        }
+        QCheckBox::indicator {
+            width: 14px;
+            height: 14px;
+        }
+        """)
         perm_layout.addWidget(self.search_check)
 
         # 允许存档
         self.archive_check: QCheckBox = QCheckBox("允许存档")
         self.archive_check.setChecked(True)
+        self.archive_check.setStyleSheet("""
+        QCheckBox {
+            font-size: 12px;
+        }
+        QCheckBox::indicator {
+            width: 14px;
+            height: 14px;
+        }
+        """)
         perm_layout.addWidget(self.archive_check)
 
         # 允许所有操作
         self.allow_all_check: QCheckBox = QCheckBox("允许所有操作")
+        self.allow_all_check.setStyleSheet("""
+        QCheckBox {
+            font-size: 12px;
+        }
+        QCheckBox::indicator {
+            width: 14px;
+            height: 14px;
+        }
+        """)
         perm_layout.addWidget(self.allow_all_check)
 
         perm_layout.addStretch()
+
+        # 连接权限复选框的信号，实现联动
+        self._connect_permission_signals()
 
         # 将perm_group添加到传入的layout中
         layout.addWidget(perm_group)
@@ -300,6 +260,16 @@ class DufsServiceDialog(QDialog):
         auth_layout.addWidget(QLabel("用户名:"), 0, 0)
         self.auth_user_edit: QLineEdit = QLineEdit()
         self.auth_user_edit.setPlaceholderText("留空表示无需认证")
+        self.auth_user_edit.setStyleSheet("""
+        QLineEdit {
+            background: white;
+            border: 1px solid #ddd;
+            padding: 4px 6px;
+            border-radius: 4px;
+            min-height: 16px !important;
+            font-size: 12px;
+        }
+        """)
         auth_layout.addWidget(self.auth_user_edit, 0, 1)
 
         # 密码
@@ -307,10 +277,66 @@ class DufsServiceDialog(QDialog):
         self.auth_pass_edit: QLineEdit = QLineEdit()
         self.auth_pass_edit.setPlaceholderText("留空表示无需认证")
         self.auth_pass_edit.setEchoMode(QLineEdit.Password)
+        self.auth_pass_edit.setStyleSheet("""
+        QLineEdit {
+            background: white;
+            border: 1px solid #ddd;
+            padding: 4px 6px;
+            border-radius: 4px;
+            min-height: 16px !important;
+            font-size: 12px;
+        }
+        """)
         auth_layout.addWidget(self.auth_pass_edit, 1, 1)
 
         # 将auth_group添加到传入的layout中
         layout.addWidget(auth_group)
+    
+    def _connect_permission_signals(self) -> None:
+        """连接权限复选框的信号，实现联动"""
+        # 连接单个权限复选框的信号
+        self.upload_check.stateChanged.connect(self._on_permission_changed)
+        self.delete_check.stateChanged.connect(self._on_permission_changed)
+        self.search_check.stateChanged.connect(self._on_permission_changed)
+        self.archive_check.stateChanged.connect(self._on_permission_changed)
+        
+        # 连接允许所有操作复选框的信号
+        self.allow_all_check.stateChanged.connect(self._on_allow_all_changed)
+    
+    def _on_permission_changed(self) -> None:
+        """单个权限改变时的处理"""
+        # 计算所有权限是否都被勾选
+        all_checked = (self.upload_check.isChecked() and
+                      self.delete_check.isChecked() and
+                      self.search_check.isChecked() and
+                      self.archive_check.isChecked())
+        
+        # 更新允许所有操作复选框状态（避免信号循环）
+        if self.allow_all_check.isChecked() != all_checked:
+            # 临时断开信号
+            self.allow_all_check.blockSignals(True)
+            self.allow_all_check.setChecked(all_checked)
+            self.allow_all_check.blockSignals(False)
+    
+    def _on_allow_all_changed(self) -> None:
+        """允许所有操作改变时的处理"""
+        is_checked = self.allow_all_check.isChecked()
+        
+        # 更新所有单个权限复选框状态（避免信号循环）
+        self.upload_check.blockSignals(True)
+        self.delete_check.blockSignals(True)
+        self.search_check.blockSignals(True)
+        self.archive_check.blockSignals(True)
+        
+        self.upload_check.setChecked(is_checked)
+        self.delete_check.setChecked(is_checked)
+        self.search_check.setChecked(is_checked)
+        self.archive_check.setChecked(is_checked)
+        
+        self.upload_check.blockSignals(False)
+        self.delete_check.blockSignals(False)
+        self.search_check.blockSignals(False)
+        self.archive_check.blockSignals(False)
     
     def _add_buttons(self, layout: QVBoxLayout) -> None:
         """添加按钮组"""
@@ -320,11 +346,43 @@ class DufsServiceDialog(QDialog):
         
         # 取消按钮
         cancel_btn = QPushButton("取消")
+        cancel_btn.setStyleSheet("""
+        QPushButton {
+            background: #f0f0f0;
+            border: 1px solid #ddd;
+            padding: 4px 16px;
+            border-radius: 4px;
+            color: #333;
+            min-height: 24px;
+        }
+        QPushButton:hover {
+            background: #e0e0e0;
+        }
+        QPushButton:pressed {
+            background: #d0d0d0;
+        }
+        """)
         _ = cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(cancel_btn)
         
         # 确定按钮
         ok_btn = QPushButton("确定")
+        ok_btn.setStyleSheet("""
+        QPushButton {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 4px 16px;
+            border-radius: 4px;
+            min-height: 24px;
+        }
+        QPushButton:hover {
+            background: #45a049;
+        }
+        QPushButton:pressed {
+            background: #3d8b40;
+        }
+        """)
         _ = ok_btn.clicked.connect(self._on_ok_clicked)
         button_layout.addWidget(ok_btn)
         
@@ -340,10 +398,28 @@ class DufsServiceDialog(QDialog):
             
             # 添加路径验证提示
             if not os.path.exists(self.service.serve_path):
-                self.path_edit.setStyleSheet("border: 1px solid #e74c3c;")
+                self.path_edit.setStyleSheet("""
+                QLineEdit {
+                    background: white;
+                    border: 1px solid #e74c3c;
+                    padding: 4px 6px;
+                    border-radius: 4px;
+                    min-height: 16px !important;
+                    font-size: 12px;
+                }
+                """)
                 self.path_edit.setToolTip("服务路径不存在")
             else:
-                self.path_edit.setStyleSheet("")
+                self.path_edit.setStyleSheet("""
+                QLineEdit {
+                    background: white;
+                    border: 1px solid #ddd;
+                    padding: 4px 6px;
+                    border-radius: 4px;
+                    min-height: 16px !important;
+                    font-size: 12px;
+                }
+                """)
                 self.path_edit.setToolTip("")
             
             # 填充权限配置
@@ -357,13 +433,21 @@ class DufsServiceDialog(QDialog):
             if hasattr(self.service, 'auth_user'):
                 self.auth_user_edit.setText(self.service.auth_user)
             if hasattr(self.service, 'auth_pass'):
-                self.auth_pass_edit.setText(self.service.auth_pass)
+                # 解密密码显示
+                decrypted_pass = decrypt_password(self.service.auth_pass)
+                self.auth_pass_edit.setText(decrypted_pass)
     
     def _browse_path(self) -> None:
         """浏览路径"""
-        path = QFileDialog.getExistingDirectory(self, "选择服务路径")
-        if path:
-            self.path_edit.setText(path)
+        dialog = QFileDialog(self, "选择服务路径")
+        dialog.setFileMode(QFileDialog.Directory)
+        dialog.setOption(QFileDialog.ShowDirsOnly, True)
+        # 设置对话框大小，压缩高度
+        dialog.resize(800, 400)
+        if dialog.exec_() == QFileDialog.Accepted:
+            paths = dialog.selectedFiles()
+            if paths:
+                self.path_edit.setText(paths[0])
     
     def _validate_service_path(self, path: str) -> tuple[bool, str]:
         """验证服务路径的安全性
@@ -416,6 +500,20 @@ class DufsServiceDialog(QDialog):
             QMessageBox.critical(self, "错误", "请输入有效的端口号（1-65535）")
             return
 
+        # 验证系统保留端口（0-1024需要管理员权限）
+        if port < 1024:
+            reply = QMessageBox.warning(
+                self,
+                "系统保留端口警告",
+                f"端口 {port} 是系统保留端口，需要管理员权限才能使用。\n\n"
+                "建议使用 1024 以上的端口，或确保程序以管理员身份运行。\n\n"
+                "是否继续使用此端口？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                return
+
         # 验证服务路径（安全验证）
         path = self.path_edit.text()
         is_valid, error_msg = self._validate_service_path(path)
@@ -438,8 +536,8 @@ class DufsServiceDialog(QDialog):
 
         # 更新认证配置
         self.service.auth_user = self.auth_user_edit.text()
-        # 注意：密码以明文存储，实际生产环境应考虑加密
-        self.service.auth_pass = self.auth_pass_edit.text()
+        # 加密存储密码
+        self.service.auth_pass = encrypt_password(self.auth_pass_edit.text())
 
         # 接受对话框
         self.accept()

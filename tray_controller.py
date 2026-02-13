@@ -45,6 +45,7 @@ class TrayMenuBuilder:
             self.tray_icon = QSystemTrayIcon(self.main_window)
 
         self.tray_icon.setToolTip("DufsGUI - 服务管理器")
+        self.tray_icon.show()  # 显示托盘图标
         return self.tray_icon
 
     def build_tray_menu(self, callbacks: dict) -> QMenu:
@@ -251,7 +252,39 @@ class TrayController:
             TrayMenuBuilder: 菜单构建器实例
         """
         self.menu_builder = TrayMenuBuilder(self.main_window)
+        # 创建并显示托盘图标
+        self.menu_builder.build_tray_icon()
+        # 创建托盘菜单
+        callbacks = {
+            'restore': self.restore_window,
+            'exit': self.exit_application
+        }
+        tray_menu = self.menu_builder.build_tray_menu(callbacks)
+        # 设置托盘图标菜单
+        if self.menu_builder.tray_icon:
+            self.menu_builder.tray_icon.setContextMenu(tray_menu)
+            # 连接双击信号（左键双击恢复窗口）
+            self.menu_builder.tray_icon.activated.connect(self._on_tray_activated)
         return self.menu_builder
+
+    def _on_tray_activated(self, reason):
+        """托盘图标激活事件处理"""
+        # reason 1 = 左键单击, 2 = 右键单击, 3 = 双击
+        # 只有双击(reason=3)时才恢复窗口，其他情况不处理（右键菜单由setContextMenu自动处理）
+        if reason == 3:  # 双击
+            self.restore_window()
+
+    def restore_window(self):
+        """恢复主窗口"""
+        if self.main_window:
+            self.main_window.showNormal()
+            self.main_window.activateWindow()
+            self.main_window.raise_()
+
+    def exit_application(self):
+        """退出应用程序"""
+        if self.main_window:
+            self.main_window.close()
 
     def show_message(self, title: str, message: str, icon=QSystemTrayIcon.Information, duration: int = 3000):
         """显示托盘消息

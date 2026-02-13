@@ -250,6 +250,7 @@ class CloudflareTunnel:
                     if log_manager:
                         log_manager.append_log_legacy(f"Cloudflare错误: {line.strip()}", True, self.service_name)
                 else:
+                    # 传递所有日志到 log_manager 进行转换和显示
                     if log_manager:
                         log_manager.append_log_legacy(line.strip(), False, self.service_name)
 
@@ -313,7 +314,7 @@ class DownloadThread(QThread):
                         # 校验失败，删除文件
                         try:
                             os.remove(self.temp_path)
-                        except Exception:
+                        except (IOError, OSError):
                             pass
                         self.download_finished.emit(
                             False,
@@ -329,22 +330,22 @@ class DownloadThread(QThread):
                         os.remove(self.final_path)
                     os.rename(self.temp_path, self.final_path)
                     self.download_finished.emit(True, "下载完成")
-                except Exception as e:
+                except (IOError, OSError) as e:
                     self.download_finished.emit(False, f"文件保存失败: {str(e)}")
             else:
                 # 下载被取消，删除临时文件
                 try:
                     if os.path.exists(self.temp_path):
                         os.remove(self.temp_path)
-                except Exception:
+                except (IOError, OSError):
                     pass
                 self.download_finished.emit(False, "下载已取消")
-        except Exception as e:
+        except (IOError, OSError) as e:
             # 下载失败，删除临时文件
             try:
                 if os.path.exists(self.temp_path):
                     os.remove(self.temp_path)
-            except Exception:
+            except (IOError, OSError):
                 pass
             self.download_finished.emit(False, f"下载失败: {str(e)}")
 
@@ -431,7 +432,7 @@ class CloudflaredDownloadDialog(QDialog):
                     self.status_label.setText(f"下载完成! {size_text}\nSHA256校验通过")
                 else:
                     self.status_label.setText(f"下载完成! {size_text}")
-            except Exception:
+            except (IOError, OSError):
                 pass
         else:
             self.status_label.setText(message)
@@ -476,7 +477,7 @@ def verify_cloudflared_checksum(file_path, expected_checksum):
 
         actual_checksum = sha256_hash.hexdigest()
         return actual_checksum.lower() == expected_checksum.lower()
-    except Exception as e:
+    except (IOError, OSError) as e:
         print(f"校验文件失败: {str(e)}")
         return False
 
@@ -507,7 +508,7 @@ def check_and_download_cloudflared(parent=None, max_retries=3, verify_checksum=T
                 # 删除损坏的文件
                 try:
                     os.remove(cloudflared_path)
-                except Exception as e:
+                except (IOError, OSError) as e:
                     print(f"删除损坏文件失败: {str(e)}")
         else:
             return True
@@ -517,7 +518,7 @@ def check_and_download_cloudflared(parent=None, max_retries=3, verify_checksum=T
     try:
         if os.path.exists(temp_path):
             os.remove(temp_path)
-    except Exception:
+    except (IOError, OSError):
         pass
 
     # 询问用户是否下载
@@ -554,7 +555,7 @@ def check_and_download_cloudflared(parent=None, max_retries=3, verify_checksum=T
                     # 删除损坏的文件
                     try:
                         os.remove(cloudflared_path)
-                    except Exception:
+                    except (IOError, OSError):
                         pass
             else:
                 return True

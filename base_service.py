@@ -6,13 +6,18 @@ import subprocess
 import time
 import signal
 import atexit
-from typing import Optional
+from typing import Optional, Callable, Any
 
 from PyQt5.QtCore import pyqtSignal, QObject, QMetaObject, Qt, pyqtSlot
 
 from constants import get_resource_path, AppConstants
-from service_state import ServiceStatus, ServiceStateMachine
+from service_state import ServiceStatus
 from cloudflare_tunnel import CloudflareTunnel
+from crypto_utils import decrypt_password
+
+
+# 类型别名
+LogManagerType = Any  # 避免循环导入
 
 
 class BaseService(QObject):
@@ -51,10 +56,6 @@ class BaseService(QObject):
         # 认证配置
         self.auth_user = ""
         self.auth_pass = ""
-
-        # 初始化类级别的状态机（只创建一次）
-        if BaseService._state_machine is None:
-            BaseService._state_machine = ServiceStateMachine()
 
         # 进程信息（使用进程组管理）
         self.process: Optional[subprocess.Popen] = None
@@ -104,7 +105,7 @@ class BaseService(QObject):
                 print(f"  清理服务失败 {service.name}: {str(e)}")
 
     def _terminate_process_group(self):
-        """终止整个进程组（防止孤儿进程）"""
+        """终止整个进程组（防止孤儿进程，带超时保护）"""
         if not self.process:
             return
 
@@ -116,21 +117,25 @@ class BaseService(QObject):
                     import platform
                     if platform.system() == 'Windows':
                         subprocess.run(['taskkill', '/F', '/T', '/PID', str(self.process.pid)],
-                                     capture_output=True, check=False)
+                                     capture_output=True, check=False, timeout=5)
                     else:
                         # Linux/Mac: 使用进程组信号
                         os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
                 except Exception as e:
                     print(f"终止进程组失败: {str(e)}")
 
-            # 确保进程已终止
+            # 确保进程已终止（带超时保护）
             if self.process.poll() is None:
                 self.process.terminate()
                 try:
-                    self.process.wait(timeout=2)
+                    self.process.wait(timeout=5.0)
                 except subprocess.TimeoutExpired:
-                    self.process.kill()
-                    self.process.wait(timeout=1)
+                    # 超时后强制终止
+                    try:
+                        self.process.kill()
+                        self.process.wait(timeout=2.0)
+                    except Exception as kill_error:
+                        print(f"强制终止进程失败: {str(kill_error)}")
         except Exception as e:
             print(f"终止进程失败: {str(e)}")
 
@@ -153,12 +158,6 @@ class BaseService(QObject):
         Returns:
             bool: 状态更新是否成功
         """
-        # 使用类级别的状态机实例（单例模式，确保一致性）
-        state_machine = BaseService._state_machine
-        if state_machine is None:
-            state_machine = ServiceStateMachine()
-            BaseService._state_machine = state_machine
-
         # 使用线程锁保护整个验证和更新过程
         with self.lock:
             # 增强状态验证
@@ -168,21 +167,6 @@ class BaseService(QObject):
 
             if public_access_status is not None and public_access_status not in ["stopped", "starting", "running", "stopping"]:
                 print(f"无效的公网访问状态: {public_access_status}")
-                return False
-
-            # 验证状态转换的合法性
-            if status is not None:
-                if not state_machine.can_transition(self.status, status):
-                    return False
-
-            if public_access_status is not None:
-                if not state_machine.can_transition(self.public_access_status, public_access_status, public_access=True):
-                    return False
-
-            # 验证状态组合的合法性
-            new_service_status = status if status is not None else self.status
-            new_public_status = public_access_status if public_access_status is not None else self.public_access_status
-            if not state_machine.validate_combined_state(new_service_status, new_public_status):
                 return False
 
             # 更新服务状态
@@ -277,9 +261,10 @@ class BaseService(QObject):
             if self.allow_all:
                 cmd.extend(["--allow-all"])
 
-            # 添加认证配置
+            # 添加认证配置（解密密码后使用）
             if self.auth_user and self.auth_pass:
-                auth_rule = f"{self.auth_user}:{self.auth_pass}@/:rw"
+                decrypted_pass = decrypt_password(self.auth_pass)
+                auth_rule = f"{self.auth_user}:{decrypted_pass}@/:rw"
                 cmd.extend(["--auth", auth_rule])
 
             # 启动进程（隐藏控制台窗口）
@@ -383,6 +368,15 @@ class BaseService(QObject):
                         self._terminate_process_group()
                     except Exception as e:
                         print(f"终止进程失败: {str(e)}")
+                    finally:
+                        # 确保进程资源被释放
+                        try:
+                            if self.process:
+                                self.process.stdout.close()
+                                self.process.stderr.close()
+                        except Exception:
+                            pass
+                        self.process = None
 
             # 更新状态
             self.update_status(ServiceStatus.STOPPED)
@@ -399,6 +393,8 @@ class BaseService(QObject):
         finally:
             # 重置停止标志
             self._is_stopping = False
+            # 确保进程引用被清除
+            self.process = None
 
     def start_public_access(self, log_manager=None) -> bool:
         """启动公网访问
@@ -467,7 +463,7 @@ class BaseService(QObject):
                     import msvcrt
                     msvcrt.setmode(stdout_fd, os.O_BINARY)
 
-                while self.process.poll() is None:
+                while self.process and self.process.poll() is None:
                     try:
                         # 使用select检查是否有数据可读（带超时）
                         if sys.platform != 'win32':
@@ -486,7 +482,8 @@ class BaseService(QObject):
                             if log_manager:
                                 log_manager.append_log_legacy(line.strip(), False, self.name)
                     except Exception as e:
-                        print(f"读取服务输出失败: {str(e)}")
+                        if log_manager:
+                            log_manager.append_log_legacy(f"读取服务输出失败: {str(e)}", True, self.name)
                         break
         except Exception as e:
             if log_manager:
