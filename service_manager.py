@@ -6,6 +6,7 @@
 
 from service import DufsService, ServiceStatus
 from port_service import PortService
+import threading
 
 
 class ServiceManager:
@@ -15,6 +16,7 @@ class ServiceManager:
         """初始化服务管理器"""
         self.services: list[DufsService] = []  # 服务列表
         self.port_service = PortService()  # 端口服务
+        self._port_lock = threading.Lock()  # 操作锁，保护并发访问
     
     def add_service(self, service: DufsService) -> None:
         """添加服务
@@ -109,7 +111,33 @@ class ServiceManager:
     def cleanup_resources(self) -> None:
         """清理资源"""
         self.stop_all_services()
-        # 清空服务列表
         self.services.clear()
-        # 清空已分配端口
-        self._allocated_ports.clear()
+        self.port_service.clear_all_ports()
+
+    def generate_unique_service_name(self, base_name: str, exclude_index: int = None) -> str:
+        """生成唯一的服务名称
+
+        Args:
+            base_name: 基础名称
+            exclude_index: 排除的索引
+
+        Returns:
+            str: 唯一的服务名称
+        """
+        existing_names = [
+            service.name for i, service in enumerate(self.services)
+            if exclude_index is None or i != exclude_index
+        ]
+
+        if base_name not in existing_names:
+            return base_name
+
+        counter = 1
+        while counter <= 1000:
+            new_name = f"{base_name}_{counter}"
+            if new_name not in existing_names:
+                return new_name
+            counter += 1
+
+        import time
+        return f"{base_name}_{int(time.time())}"

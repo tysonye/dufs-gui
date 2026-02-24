@@ -66,7 +66,7 @@ class ServiceController(QObject):
         dialog = DufsServiceDialog(parent=self.view, existing_services=self.manager.services)
         if dialog.exec_() == QDialog.Accepted:
             # 自动更换重复的服务名称
-            unique_name = self._generate_unique_service_name(dialog.service.name)
+            unique_name = self.manager.generate_unique_service_name(dialog.service.name)
             dialog.service.name = unique_name
 
             # 检查并解析端口冲突
@@ -110,7 +110,7 @@ class ServiceController(QObject):
         dialog = DufsServiceDialog(parent=self.view, service=service, edit_index=row, existing_services=self.manager.services)
         if dialog.exec_() == QDialog.Accepted:
             # 自动更换重复的服务名称
-            unique_name = self._generate_unique_service_name(dialog.service.name, exclude_index=row)
+            unique_name = self.manager.generate_unique_service_name(dialog.service.name, exclude_index=row)
             dialog.service.name = unique_name
 
             # 检查配置是否有变化
@@ -428,25 +428,6 @@ class ServiceController(QObject):
         check_stopped()
 
         return self._stop_result
-
-    def _generate_unique_service_name(self, base_name: str, exclude_index: int = None) -> str:
-        """生成唯一的服务名称"""
-        existing_names = [
-            service.name for i, service in enumerate(self.manager.services)
-            if exclude_index is None or i != exclude_index
-        ]
-
-        if base_name not in existing_names:
-            return base_name
-
-        counter = 1
-        while counter <= 1000:
-            new_name = f"{base_name}_{counter}"
-            if new_name not in existing_names:
-                return new_name
-            counter += 1
-
-        return f"{base_name}_{int(time.time())}"
 
     def _on_service_status_updated(self):
         """处理服务状态更新"""

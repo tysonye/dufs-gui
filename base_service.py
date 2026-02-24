@@ -444,47 +444,50 @@ class BaseService(QObject):
         return self.cloudflare_tunnel.is_running()
 
     def read_service_output(self, log_manager=None):
-        """读取服务输出（非阻塞版，防止线程卡住）
+        """读取服务输出（优化版，兼容 Windows 和 Unix）
 
         Args:
             log_manager: 日志管理器实例
         """
-        import select
         import sys
 
         try:
             if self.process and self.process.stdout:
-                # 获取文件描述符
-                stdout_fd = self.process.stdout.fileno()
-
-                # 设置非阻塞模式（Windows不支持，使用超时轮询）
                 if sys.platform == 'win32':
-                    # Windows: 使用超时轮询避免阻塞
-                    import msvcrt
-                    msvcrt.setmode(stdout_fd, os.O_BINARY)
+                    while self.process and self.process.poll() is None:
+                        try:
+                            line = self.process.stdout.readline()
+                            if not line:
+                                time.sleep(0.1)
+                                continue
 
-                while self.process and self.process.poll() is None:
-                    try:
-                        # 使用select检查是否有数据可读（带超时）
-                        if sys.platform != 'win32':
+                            if line.strip():
+                                if log_manager:
+                                    log_manager.append_log_legacy(line.strip(), False, self.name)
+                        except Exception as e:
+                            if log_manager:
+                                log_manager.append_log_legacy(f"读取服务输出失败: {str(e)}", True, self.name)
+                            break
+                else:
+                    import select
+                    while self.process and self.process.poll() is None:
+                        try:
                             readable, _, _ = select.select([self.process.stdout], [], [], 0.5)
                             if not readable:
                                 continue
 
-                        # 读取一行（带超时保护）
-                        line = self.process.stdout.readline()
-                        if not line:
-                            # 没有数据，短暂休眠避免CPU占用过高
-                            time.sleep(0.1)
-                            continue
+                            line = self.process.stdout.readline()
+                            if not line:
+                                time.sleep(0.1)
+                                continue
 
-                        if line.strip():
+                            if line.strip():
+                                if log_manager:
+                                    log_manager.append_log_legacy(line.strip(), False, self.name)
+                        except Exception as e:
                             if log_manager:
-                                log_manager.append_log_legacy(line.strip(), False, self.name)
-                    except Exception as e:
-                        if log_manager:
-                            log_manager.append_log_legacy(f"读取服务输出失败: {str(e)}", True, self.name)
-                        break
+                                log_manager.append_log_legacy(f"读取服务输出失败: {str(e)}", True, self.name)
+                            break
         except Exception as e:
             if log_manager:
                 log_manager.append_log_legacy(f"读取服务输出失败: {str(e)}", True, self.name)

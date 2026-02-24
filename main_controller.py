@@ -23,6 +23,7 @@ from config_controller import ConfigController
 from service_controller import ServiceController
 from tray_controller import TrayController
 from lazy_loader import LazyImport
+from cloudflare_tunnel import CloudflareUpdater, UpdateDialog
 
 
 class MainController(QObject):
@@ -47,6 +48,9 @@ class MainController(QObject):
         self.config_controller = ConfigController(self.manager, self._on_service_status_updated, self.log_manager)
         self.service_controller = ServiceController(self.manager, self.log_manager, view)
         self.tray_controller = TrayController(view)
+
+        # 初始化 Cloudflared 更新器
+        self.cloudflare_updater = CloudflareUpdater()
 
         # 连接子控制器信号
         self._connect_controller_signals()
@@ -586,6 +590,34 @@ class MainController(QObject):
 
         # 6. 强制处理事件，确保UI立即刷新
         QApplication.processEvents()
+
+    def open_cloudflared_update_dialog(self):
+        """打开 Cloudflared 更新对话框"""
+        dialog = UpdateDialog(self.view, self.cloudflare_updater)
+        dialog.exec_()
+
+    def check_cloudflared_update(self):
+        """检查 Cloudflared 更新（手动触发）"""
+        has_update, current, latest = self.cloudflare_updater.check_for_updates(silent=False)
+
+        if has_update:
+            from PyQt5.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self.view,
+                "发现新版本",
+                f"当前版本: {current}\n最新版本: {latest}\n\n是否立即更新?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if reply == QMessageBox.Yes:
+                self.open_cloudflared_update_dialog()
+        else:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self.view,
+                "版本检查",
+                f"当前版本: {current}\n已是最新版本"
+            )
 
     def _create_log_tabs_lazy(self):
         """创建日志标签页（极简版 - 预创建控件但延迟设置内容）"""
